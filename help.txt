@@ -1,10 +1,13 @@
 rodney - Chrome automation from the command line
 
 Browser lifecycle:
-  rodney start [--show] [--insecure | -k]  Launch Chrome (headless by default, --show for visible)
+  rodney start [--show] [--insecure | -k] [--viewport WxH] [--scale N]
+                                  Launch Chrome (headless by default, --show for visible);
+                                  viewport default 1280x800, device scale factor default 1
   rodney connect <host:port>      Connect to existing Chrome on remote debug port
   rodney stop                     Shut down Chrome
   rodney status                   Show browser status
+  rodney viewport [WxH]           Print or set the viewport of the active page
 
 Navigation:
   rodney open <url>               Navigate to URL
@@ -23,6 +26,7 @@ Page info:
 
 Interaction:
   rodney js <expression>          Evaluate JavaScript expression
+  rodney js --file <path|->       Run a script file at global scope (- for stdin)
   rodney click <selector>         Click an element
   rodney input <selector> <text>  Type text into an input field
   rodney clear <selector>         Clear an input field
@@ -33,6 +37,12 @@ Interaction:
   rodney hover <selector>         Hover over an element
   rodney focus <selector>         Focus an element
 
+Injected scripts:
+  rodney inject add <name> <file|-> Run a script now and in every later page of this session
+  rodney inject remove <name>     Stop injecting a script
+  rodney inject clear             Stop injecting all scripts
+  rodney inject list              List injected scripts
+
 Waiting:
   rodney wait <selector>          Wait for element to appear
   rodney waitload                 Wait for page load
@@ -41,8 +51,12 @@ Waiting:
   rodney sleep <seconds>          Sleep for N seconds
 
 Screenshots:
-  rodney screenshot [-w N] [-h N] [file]  Take page screenshot
-  rodney screenshot-el <sel> [f]  Screenshot an element
+  rodney screenshot [-w N] [-h N] [--scale N] [--frame] [file]
+                                  Take page screenshot (full page unless -h is given;
+                                  --frame draws a browser-window mock-up around it)
+  rodney screenshot-el <sel> [--include SEL]... [--margin N] [--scale N] [-w N -h N] [file]
+                                  Screenshot an element; --include adds all matches of
+                                  SEL to the region, --margin adds N CSS px on each side
 
 Tabs:
   rodney pages                    List all pages/tabs

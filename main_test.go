@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,19 +30,20 @@ var env *testEnv
 
 func TestMain(m *testing.M) {
 	// Launch headless Chrome once for all tests
-	l := launcher.New().
-		Set("no-sandbox").
-		Set("disable-gpu").
-		Set("single-process").
-		Headless(true).
-		Leakless(false)
+	u := newLauncher("1").MustLaunch()
+	browser := rod.New().ControlURL(u).NoDefaultDevice().MustConnect()
 
-	if bin := os.Getenv("ROD_CHROME_BIN"); bin != "" {
-		l = l.Bin(bin)
+	// Build the binary once for the cross-process tests in e2e_test.go
+	binDir, err := os.MkdirTemp("", "rodney-test-bin")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create temp dir: %v\n", err)
+		os.Exit(1)
 	}
-
-	u := l.MustLaunch()
-	browser := rod.New().ControlURL(u).MustConnect()
+	rodneyBin = filepath.Join(binDir, "rodney"+exeSuffix())
+	if out, err := exec.Command("go", "build", "-o", rodneyBin, ".").CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to build rodney: %v\n%s", err, out)
+		os.Exit(1)
+	}
 
 	// Start test HTTP server with known HTML fixtures
 	mux := http.NewServeMux()
@@ -51,6 +53,7 @@ func TestMain(m *testing.M) {
 	mux.HandleFunc("/download", handleDownload)
 	mux.HandleFunc("/testfile.txt", handleTestFile)
 	mux.HandleFunc("/empty", handleEmpty)
+	mux.HandleFunc("/fixture/", handleFixture)
 	server := httptest.NewServer(mux)
 
 	env = &testEnv{browser: browser, server: server}
@@ -59,7 +62,33 @@ func TestMain(m *testing.M) {
 
 	server.Close()
 	browser.MustClose()
+	os.RemoveAll(binDir)
 	os.Exit(code)
+}
+
+// newLauncher returns the launcher that the tests use. scale is passed as
+// --force-device-scale-factor, the same flag that "rodney start" passes.
+func newLauncher(scale string) *launcher.Launcher {
+	l := launcher.New().
+		Set("no-sandbox").
+		Set("disable-gpu").
+		Set("single-process").
+		Set("force-device-scale-factor", scale).
+		Headless(true).
+		Leakless(false)
+	if bin := os.Getenv("ROD_CHROME_BIN"); bin != "" {
+		l = l.Bin(bin)
+	}
+	return l
+}
+
+// launchBrowser starts a separate browser for one test, for example with
+// another device scale factor, and closes it when the test ends.
+func launchBrowser(t *testing.T, scale string) *rod.Browser {
+	t.Helper()
+	b := rod.New().ControlURL(newLauncher(scale).MustLaunch()).NoDefaultDevice().MustConnect()
+	t.Cleanup(func() { b.MustClose() })
+	return b
 }
 
 // --- HTML fixtures ---
@@ -923,10 +952,10 @@ func TestAssert_ValueFormatting_MatchesJSCommand(t *testing.T) {
 		expr     string
 		expected string
 	}{
-		{`document.title`, "Test Page"},   // string unquoted
-		{`1 + 2`, "3"},                    // number
-		{`true`, "true"},                  // boolean
-		{`null`, "null"},                  // null
+		{`document.title`, "Test Page"}, // string unquoted
+		{`1 + 2`, "3"},                  // number
+		{`true`, "true"},                // boolean
+		{`null`, "null"},                // null
 		{`document.querySelectorAll("button").length`, "2"}, // number from DOM
 	}
 
@@ -1079,74 +1108,98 @@ func TestFormatAssertFail_EqualityWithMessage(t *testing.T) {
 // =====================
 
 func TestParseStartArgs_NoFlags(t *testing.T) {
-	insecure, headless, err := parseStartArgs([]string{})
+	opts, err := parseStartArgs([]string{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if insecure {
+	if opts.insecure {
 		t.Error("expected insecure=false with no flags")
 	}
-	if !headless {
+	if !opts.headless {
 		t.Error("expected headless=true with no flags")
+	}
+	if opts.viewport != defaultViewport {
+		t.Errorf("expected viewport %v, got %v", defaultViewport, opts.viewport)
+	}
+	if opts.scale != 1 {
+		t.Errorf("expected scale 1, got %v", opts.scale)
 	}
 }
 
 func TestParseStartArgs_ShowFlag(t *testing.T) {
-	insecure, headless, err := parseStartArgs([]string{"--show"})
+	opts, err := parseStartArgs([]string{"--show"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if insecure {
+	if opts.insecure {
 		t.Error("expected insecure=false")
 	}
-	if headless {
+	if opts.headless {
 		t.Error("expected headless=false when --show is passed")
 	}
 }
 
 func TestParseStartArgs_InsecureFlag(t *testing.T) {
-	insecure, headless, err := parseStartArgs([]string{"--insecure"})
+	opts, err := parseStartArgs([]string{"--insecure"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !insecure {
+	if !opts.insecure {
 		t.Error("expected insecure=true when --insecure is passed")
 	}
-	if !headless {
+	if !opts.headless {
 		t.Error("expected headless=true when only --insecure is passed")
 	}
 }
 
 func TestParseStartArgs_InsecureShortFlag(t *testing.T) {
-	insecure, _, err := parseStartArgs([]string{"-k"})
+	opts, err := parseStartArgs([]string{"-k"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !insecure {
+	if !opts.insecure {
 		t.Error("expected insecure=true when -k is passed")
 	}
 }
 
 func TestParseStartArgs_ShowAndInsecure(t *testing.T) {
-	insecure, headless, err := parseStartArgs([]string{"--show", "--insecure"})
+	opts, err := parseStartArgs([]string{"--show", "--insecure"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !insecure {
+	if !opts.insecure {
 		t.Error("expected insecure=true")
 	}
-	if headless {
+	if opts.headless {
 		t.Error("expected headless=false when --show is passed")
 	}
 }
 
 func TestParseStartArgs_UnknownFlag(t *testing.T) {
-	_, _, err := parseStartArgs([]string{"--bogus"})
+	_, err := parseStartArgs([]string{"--bogus"})
 	if err == nil {
 		t.Fatal("expected error for unknown flag --bogus")
 	}
 	if !strings.Contains(err.Error(), "--bogus") {
 		t.Errorf("error should mention the unknown flag, got: %v", err)
+	}
+}
+
+func TestParseStartArgs_ViewportAndScale(t *testing.T) {
+	opts, err := parseStartArgs([]string{"--viewport", "900x600", "--scale", "2"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if opts.viewport != (Viewport{900, 600}) || opts.scale != 2 {
+		t.Errorf("got viewport %v scale %v, want 900x600 scale 2", opts.viewport, opts.scale)
+	}
+}
+
+func TestParseStartArgs_BadValues(t *testing.T) {
+	for _, args := range [][]string{{"--viewport", "wide"}, {"--scale", "0"}, {"--scale", "abc"}, {"--scale", "NaN"}, {"--scale", "+Inf"}} {
+		if _, err := parseStartArgs(args); err == nil {
+			t.Errorf("parseStartArgs(%v) returned no error", args)
+		}
 	}
 }
 

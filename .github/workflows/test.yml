@@ -20,3 +20,5 @@ jobs:
         run: go build -o rodney${{ matrix.os == 'windows-latest' && '.exe' || '' }} .
       - name: Check version flag
         run: ./rodney${{ matrix.os == 'windows-latest' && '.exe' || '' }} --version
+      - name: Run tests
+        run: go test ./...

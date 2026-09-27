@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -79,12 +80,15 @@ func resolveStateDir(mode scopeMode, workingDir string) string {
 
 // State persisted between CLI invocations
 type State struct {
-	DebugURL    string `json:"debug_url"`
-	ChromePID   int    `json:"chrome_pid"`
-	ActivePage  int    `json:"active_page"`  // index into pages list
-	DataDir     string `json:"data_dir"`
-	ProxyPID    int    `json:"proxy_pid,omitempty"`  // PID of auth proxy helper
-	ProxyPort   int    `json:"proxy_port,omitempty"` // local port of auth proxy
+	DebugURL   string        `json:"debug_url"`
+	ChromePID  int           `json:"chrome_pid"`
+	ActivePage int           `json:"active_page"` // index into pages list
+	DataDir    string        `json:"data_dir"`
+	ProxyPID   int           `json:"proxy_pid,omitempty"`  // PID of auth proxy helper
+	ProxyPort  int           `json:"proxy_port,omitempty"` // local port of auth proxy
+	Viewport   *Viewport     `json:"viewport,omitempty"`   // viewport for pages that open and newpage handle; nil after connect
+	Scale      float64       `json:"scale,omitempty"`      // device scale factor passed at launch
+	Injects    []InjectEntry `json:"injects,omitempty"`    // scripts that every command applies, in order
 }
 
 func stateDir() string {
@@ -129,9 +133,11 @@ func removeState() {
 	os.Remove(statePath())
 }
 
-// connectBrowser connects to the running Chrome instance
+// connectBrowser connects to the running Chrome instance. NoDefaultDevice
+// stops go-rod from emulating a device on every page it attaches to, so
+// attaching does not change the viewport.
 func connectBrowser(s *State) (*rod.Browser, error) {
-	browser := rod.New().ControlURL(s.DebugURL)
+	browser := rod.New().ControlURL(s.DebugURL).NoDefaultDevice()
 	if err := browser.Connect(); err != nil {
 		return nil, fmt.Errorf("failed to connect to browser (is it still running?): %w", err)
 	}
@@ -215,6 +221,8 @@ func main() {
 		cmdStop(args)
 	case "status":
 		cmdStatus(args)
+	case "viewport":
+		cmdViewport(args)
 	case "open":
 		cmdOpen(args)
 	case "back":
@@ -239,6 +247,8 @@ func main() {
 		cmdPDF(args)
 	case "js":
 		cmdJS(args)
+	case "inject":
+		cmdInject(args)
 	case "click":
 		cmdClick(args)
 	case "input":
@@ -329,6 +339,9 @@ func withPage() (*State, *rod.Browser, *rod.Page) {
 	if err != nil {
 		fatal("%v", err)
 	}
+	if err := attachPage(page, s, os.Stderr); err != nil {
+		fatal("%v", err)
+	}
 	// Apply default timeout so element queries don't hang forever
 	page = page.Timeout(defaultTimeout)
 	return s, browser, page
@@ -336,27 +349,49 @@ func withPage() (*State, *rod.Browser, *rod.Page) {
 
 // --- Commands ---
 
+// startOptions holds the flags of the "start" command.
+type startOptions struct {
+	insecure bool
+	headless bool
+	viewport Viewport
+	scale    float64
+}
+
 // parseStartArgs parses the flags for the "start" command.
-// Returns ignoreCertErrors, headless, and an error for unknown flags.
-func parseStartArgs(args []string) (ignoreCertErrors bool, headless bool, err error) {
+func parseStartArgs(args []string) (startOptions, error) {
+	opts := startOptions{headless: true, viewport: defaultViewport, scale: 1}
+	const usage = "usage: rodney start [--show] [--insecure] [--viewport WxH] [--scale N]"
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.BoolVar(&ignoreCertErrors, "insecure", false, "")
-	fs.BoolVar(&ignoreCertErrors, "k", false, "")
+	fs.BoolVar(&opts.insecure, "insecure", false, "")
+	fs.BoolVar(&opts.insecure, "k", false, "")
 	show := fs.Bool("show", false, "")
+	viewport := fs.String("viewport", defaultViewport.String(), "")
+	fs.Float64Var(&opts.scale, "scale", 1, "")
 
-	if parseErr := fs.Parse(args); parseErr != nil {
-		return false, true, fmt.Errorf("unknown flag: %s\nusage: rodney start [--show] [--insecure]", findUnknownFlag(args, fs))
+	if err := fs.Parse(args); err != nil {
+		if strings.Contains(err.Error(), "not defined") {
+			return opts, fmt.Errorf("unknown flag: %s\n%s", findUnknownFlag(args, fs), usage)
+		}
+		return opts, fmt.Errorf("%v\n%s", err, usage)
 	}
 	if fs.NArg() > 0 {
-		return false, true, fmt.Errorf("unknown flag: %s\nusage: rodney start [--show] [--insecure]", fs.Arg(0))
+		return opts, fmt.Errorf("unknown flag: %s\n%s", fs.Arg(0), usage)
 	}
-	headless = !*show
-	return ignoreCertErrors, headless, nil
+	vp, err := parseViewport(*viewport)
+	if err != nil {
+		return opts, fmt.Errorf("%v\n%s", err, usage)
+	}
+	if opts.scale <= 0 || math.IsNaN(opts.scale) || math.IsInf(opts.scale, 0) {
+		return opts, fmt.Errorf("invalid scale %v (must be finite and greater than 0)\n%s", opts.scale, usage)
+	}
+	opts.viewport = vp
+	opts.headless = !*show
+	return opts, nil
 }
 
 func cmdStart(args []string) {
-	ignoreCertErrors, headless, err := parseStartArgs(args)
+	opts, err := parseStartArgs(args)
 	if err != nil {
 		fatal("%s", err)
 	}
@@ -370,6 +405,10 @@ func cmdStart(args []string) {
 			removeState()
 		}
 	}
+	// Scripts from an earlier session do not carry over.
+	if err := os.RemoveAll(injectDir()); err != nil {
+		fatal("failed to clear injected scripts: %v", err)
+	}
 
 	dataDir := filepath.Join(stateDir(), "chrome-data")
 	os.MkdirAll(dataDir, 0755)
@@ -378,13 +417,14 @@ func cmdStart(args []string) {
 		Set("no-sandbox").
 		Set("disable-gpu").
 		Set("single-process"). // Required for screenshots in gVisor/container environments
-		Leakless(false).        // Keep Chrome alive after CLI exits
+		Set("force-device-scale-factor", strconv.FormatFloat(opts.scale, 'f', -1, 64)).
+		Leakless(false). // Keep Chrome alive after CLI exits
 		UserDataDir(dataDir).
-		Headless(headless)
+		Headless(opts.headless)
 
 	// When in non-headless mode, make sure that we show the startup window immediately
 	// (instead of showing a window only after calling "rodney open")
-	if !headless {
+	if !opts.headless {
 		l = l.Delete("no-startup-window")
 	}
 
@@ -421,11 +461,11 @@ func cmdStart(args []string) {
 		time.Sleep(500 * time.Millisecond)
 
 		l.Set("proxy-server", fmt.Sprintf("http://127.0.0.1:%d", proxyPort))
-		ignoreCertErrors = true // Proxy requires ignoring cert errors
+		opts.insecure = true // Proxy requires ignoring cert errors
 		fmt.Printf("Auth proxy started (PID %d, port %d) -> %s\n", proxyPID, proxyPort, server)
 	}
 
-	if ignoreCertErrors {
+	if opts.insecure {
 		l.Set("ignore-certificate-errors")
 	}
 
@@ -441,6 +481,8 @@ func cmdStart(args []string) {
 		DataDir:    dataDir,
 		ProxyPID:   proxyPID,
 		ProxyPort:  proxyPort,
+		Viewport:   &opts.viewport,
+		Scale:      opts.scale,
 	}
 
 	if err := saveState(state); err != nil {
@@ -522,6 +564,9 @@ func cmdStop(args []string) {
 			proc.Signal(syscall.SIGTERM)
 		}
 	}
+	if err := os.RemoveAll(injectDir()); err != nil {
+		fatal("failed to clear injected scripts: %v", err)
+	}
 	removeState()
 	fmt.Println("Chrome stopped")
 }
@@ -569,11 +614,15 @@ func cmdOpen(args []string) {
 		fatal("%v", err)
 	}
 
-	// If no pages exist, create one
+	// If no pages exist, create one. The new page starts at about:blank, so
+	// that attachPage runs before the page's own scripts.
 	pages, _ := browser.Pages()
 	var page *rod.Page
 	if len(pages) == 0 {
-		page = browser.MustPage(url)
+		page, err = browser.Page(proto.TargetCreateTarget{URL: "about:blank"})
+		if err != nil {
+			fatal("failed to create page: %v", err)
+		}
 		s.ActivePage = 0
 		saveState(s)
 	} else {
@@ -581,9 +630,15 @@ func cmdOpen(args []string) {
 		if err != nil {
 			fatal("%v", err)
 		}
-		if err := page.Navigate(url); err != nil {
-			fatal("navigation failed: %v", err)
-		}
+	}
+	if err := attachPage(page, s, os.Stderr); err != nil {
+		fatal("%v", err)
+	}
+	if err := ensureViewport(page, s); err != nil {
+		fatal("%v", err)
+	}
+	if err := page.Navigate(url); err != nil {
+		fatal("navigation failed: %v", err)
 	}
 	page.MustWaitLoad()
 	info, _ := page.Info()
@@ -738,7 +793,25 @@ func cmdPDF(args []string) {
 
 func cmdJS(args []string) {
 	if len(args) < 1 {
-		fatal("usage: rodney js <expression>")
+		fatal("usage: rodney js <expression>\n       rodney js --file <path|->")
+	}
+	// Only a leading --file is a flag: an expression such as "-1 + 2" must
+	// not go through flag parsing.
+	if args[0] == "--file" {
+		if len(args) != 2 {
+			fatal("usage: rodney js --file <path|-> (an expression cannot follow --file)")
+		}
+		src, err := readScriptSource(args[1])
+		if err != nil {
+			fatal("%v", err)
+		}
+		_, _, page := withPage()
+		obj, err := evalScript(page, src)
+		if err != nil {
+			fatal("JS error: %v", err)
+		}
+		printJSResult(obj)
+		return
 	}
 	expr := strings.Join(args, " ")
 	_, _, page := withPage()
@@ -749,25 +822,7 @@ func cmdJS(args []string) {
 	if err != nil {
 		fatal("JS error: %v", err)
 	}
-	// Print the value based on its JSON type
-	v := result.Value
-	raw := v.JSON("", "")
-	// For simple types, print cleanly; for objects/arrays, pretty-print
-	switch {
-	case raw == "null" || raw == "undefined":
-		fmt.Println(raw)
-	case raw == "true" || raw == "false":
-		fmt.Println(raw)
-	case len(raw) > 0 && raw[0] == '"':
-		// String value - print unquoted
-		fmt.Println(v.Str())
-	case len(raw) > 0 && (raw[0] == '{' || raw[0] == '['):
-		// Object or array - pretty print
-		fmt.Println(v.JSON("", "  "))
-	default:
-		// Numbers and other primitives
-		fmt.Println(raw)
-	}
+	printJSValue(result.Value)
 }
 
 func cmdClick(args []string) {
@@ -1126,13 +1181,21 @@ func nextAvailableFile(base, ext string) string {
 func cmdScreenshot(args []string) {
 	fs := flag.NewFlagSet("screenshot", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	width := fs.Int("width", 1280, "")
-	fs.IntVar(width, "w", 1280, "")
+	width := fs.Int("width", 0, "")
+	fs.IntVar(width, "w", 0, "")
 	height := fs.Int("height", 0, "")
 	fs.IntVar(height, "h", 0, "")
+	scale := fs.Float64("scale", 0, "")
+	frame := fs.Bool("frame", false, "")
 
 	if err := fs.Parse(args); err != nil {
 		fatal("%v", err)
+	}
+	if math.IsNaN(*scale) || math.IsInf(*scale, 0) {
+		fatal("--scale must be finite")
+	}
+	if *scale < 0 {
+		fatal("invalid scale %v (must be greater than 0)", *scale)
 	}
 
 	fullPage := true
@@ -1149,25 +1212,28 @@ func cmdScreenshot(args []string) {
 		file = nextAvailableFile("screenshot", ".png")
 	}
 
-	_, _, page := withPage()
+	_, browser, page := withPage()
 
-	// Set viewport size
-	viewportHeight := *height
-	if viewportHeight == 0 {
-		viewportHeight = 720
-	}
-	err := proto.EmulationSetDeviceMetricsOverride{
-		Width:             *width,
-		Height:            viewportHeight,
-		DeviceScaleFactor: 1,
-	}.Call(page)
+	data, err := capture(page, captureOptions{Width: *width, Height: *height, FullPage: fullPage, Scale: *scale})
 	if err != nil {
-		fatal("failed to set viewport: %v", err)
+		fatal("%v", err)
 	}
-
-	data, err := page.Screenshot(fullPage, nil)
-	if err != nil {
-		fatal("screenshot failed: %v", err)
+	if *frame {
+		frameScale := *scale
+		if frameScale == 0 {
+			m, err := readMetrics(page)
+			if err != nil {
+				fatal("%v", err)
+			}
+			frameScale = m.DPR
+		}
+		info, err := page.Info()
+		if err != nil {
+			fatal("failed to read page info: %v", err)
+		}
+		if data, err = renderFrame(browser, data, info.Title, info.URL, frameScale); err != nil {
+			fatal("%v", err)
+		}
 	}
 	if err := os.WriteFile(file, data, 0644); err != nil {
 		fatal("failed to write screenshot: %v", err)
@@ -1176,21 +1242,47 @@ func cmdScreenshot(args []string) {
 }
 
 func cmdScreenshotEl(args []string) {
-	if len(args) < 1 {
-		fatal("usage: rodney screenshot-el <selector> [file]")
+	const usage = "usage: rodney screenshot-el <selector> [--include SEL]... [--margin M] [--scale N] [-w W -h H] [file]"
+	fs := flag.NewFlagSet("screenshot-el", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var includes stringList
+	fs.Var(&includes, "include", "")
+	margin := fs.Float64("margin", 0, "")
+	scale := fs.Float64("scale", 0, "")
+	width := fs.Int("width", 0, "")
+	fs.IntVar(width, "w", 0, "")
+	height := fs.Int("height", 0, "")
+	fs.IntVar(height, "h", 0, "")
+
+	pos, err := parseInterleaved(fs, args)
+	if err != nil {
+		fatal("%v\n%s", err, usage)
+	}
+	if len(pos) < 1 || len(pos) > 2 {
+		fatal("%s", usage)
+	}
+	if math.IsNaN(*margin) || math.IsInf(*margin, 0) || math.IsNaN(*scale) || math.IsInf(*scale, 0) {
+		fatal("--margin and --scale must be finite")
+	}
+	if *margin < 0 || *scale < 0 {
+		fatal("--margin and --scale must not be negative")
 	}
 	file := "element.png"
-	if len(args) > 1 {
-		file = args[1]
+	if len(pos) > 1 {
+		file = pos[1]
 	}
 	_, _, page := withPage()
-	el, err := page.Element(args[0])
+	data, err := capture(page, captureOptions{
+		Width:  *width,
+		Height: *height,
+		Scale:  *scale,
+		Warn:   os.Stderr,
+		Region: func(p *rod.Page) (*proto.PageViewport, error) {
+			return elementClip(p, pos[0], includes, *margin)
+		},
+	})
 	if err != nil {
-		fatal("element not found: %v", err)
-	}
-	data, err := el.Screenshot(proto.PageCaptureScreenshotFormatPng, 0)
-	if err != nil {
-		fatal("screenshot failed: %v", err)
+		fatal("%v", err)
 	}
 	if err := os.WriteFile(file, data, 0644); err != nil {
 		fatal("failed to write screenshot: %v", err)
@@ -1276,12 +1368,21 @@ func cmdNewPage(args []string) {
 		}
 	}
 
-	var page *rod.Page
+	page, err := browser.Page(proto.TargetCreateTarget{URL: "about:blank"})
+	if err != nil {
+		fatal("failed to create page: %v", err)
+	}
+	if err := attachPage(page, s, os.Stderr); err != nil {
+		fatal("%v", err)
+	}
+	if err := ensureViewport(page, s); err != nil {
+		fatal("%v", err)
+	}
 	if url != "" {
-		page = browser.MustPage(url)
+		if err := page.Navigate(url); err != nil {
+			fatal("navigation failed: %v", err)
+		}
 		page.MustWaitLoad()
-	} else {
-		page = browser.MustPage("")
 	}
 
 	// Switch active to the new page
@@ -1611,7 +1712,7 @@ func queryAXNodes(page *rod.Page, name, role string) ([]*proto.AccessibilityAXNo
 	}
 
 	result, err := proto.AccessibilityQueryAXTree{
-		BackendNodeID: doc.Root.BackendNodeID,
+		BackendNodeID:  doc.Root.BackendNodeID,
 		AccessibleName: name,
 		Role:           role,
 	}.Call(page)

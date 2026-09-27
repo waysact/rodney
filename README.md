@@ -44,10 +44,15 @@ Requires:
 rodney start              # Launch headless Chrome
 rodney start --show       # Launch with visible browser window
 rodney start --insecure   # Launch with TLS errors ignored (-k shorthand)
+rodney start --viewport 1440x900 --scale 2  # Set the viewport and the device scale factor
+rodney viewport                             # Print the viewport of the active page
+rodney viewport 1024x768                    # Set the viewport for this and new pages
 rodney connect host:9222  # Connect to existing Chrome on remote debug port
 rodney status             # Show browser info and active page
 rodney stop               # Shut down Chrome
 ```
+
+The viewport is a property of the browser window. It stays the same across commands: a rodney command does not change it when it connects. `rodney start` sets the device scale factor for the whole session. A session made with `rodney connect` keeps the viewport of the browser's own window.
 
 ### Navigate
 
@@ -81,9 +86,24 @@ rodney js "1 + 2"                               # Math
 rodney js 'document.querySelector("h1").textContent'  # DOM queries
 rodney js '[1,2,3].map(x => x * 2)'            # Returns pretty-printed JSON
 rodney js 'document.querySelectorAll("a").length'     # Count elements
+rodney js --file presenter.js                   # Run a script file at global scope
+cat setup.js | rodney js --file -               # Read the script from stdin
 ```
 
 The expression is automatically wrapped in `() => { return (expr); }`.
+
+`js --file` runs the file as the DevTools console does. Top-level `var` and function declarations become globals, top-level `await` works, and rodney prints the value of the last expression. The script goes to Chrome through the DevTools protocol, so the command-line length limit does not apply.
+
+### Inject scripts
+
+```bash
+rodney inject add presenter presenter.js   # Run now and in every later page
+rodney inject list                         # Show the injected scripts
+rodney inject remove presenter             # Stop injecting the script
+rodney inject clear                        # Stop injecting all scripts
+```
+
+An injected script runs in the top frame of each page, once per document. Every rodney command applies the injected scripts when it connects, so a script comes back after a reload at the latest with the next command. Rodney wraps each script in a function: export values through `window`. `inject remove` does not unload a script from a page where it already ran; reload the page for a clean state. `rodney stop` removes all injected scripts.
 
 ### Interact with elements
 
@@ -116,9 +136,14 @@ rodney sleep 2.5            # Sleep for N seconds
 ```bash
 rodney screenshot                         # Save as screenshot.png
 rodney screenshot page.png                # Save to specific file
-rodney screenshot -w 1280 -h 720 out.png  # Set viewport width/height
+rodney screenshot -w 1280 -h 720 out.png  # Capture with a temporary viewport size
+rodney screenshot -h 800 --scale 2 hi.png # Capture the viewport at 2 image pixels per CSS pixel
+rodney screenshot -h 800 --frame framed.png  # Draw a browser-window mock-up with the title and URL
 rodney screenshot-el ".chart" chart.png   # Screenshot specific element
+rodney screenshot-el "#save" --include ".popover" --margin 16 save.png  # Element plus its popover
 ```
+
+Without `-w` or `-h`, a screenshot uses the current viewport and does not change the page. With `-w` or `-h`, rodney sets the size for this capture only, waits two animation frames so that the page can react, and then sets the viewport back. Without `-h`, the screenshot shows the full page.
 
 ### Manage tabs
 
@@ -403,10 +428,11 @@ The tool uses the [rod](https://github.com/go-rod/rod) Go library which communic
 
 | Command | Arguments | Description |
 |---|---|---|
-| `start` | `[--show] [--insecure\|-k]` | Launch Chrome (headless by default, `--show` for visible) |
+| `start` | `[--show] [--insecure\|-k] [--viewport WxH] [--scale N]` | Launch Chrome (headless by default, `--show` for visible) |
 | `connect` | `<host:port>` | Connect to existing Chrome on remote debug port |
 | `stop` | | Shut down Chrome |
 | `status` | | Show browser status |
+| `viewport` | `[WxH]` | Print or set the viewport |
 | `open` | `<url>` | Navigate to URL |
 | `back` | | Go back in history |
 | `forward` | | Go forward in history |
@@ -418,7 +444,8 @@ The tool uses the [rod](https://github.com/go-rod/rod) Go library which communic
 | `text` | `<selector>` | Print element text content |
 | `attr` | `<selector> <name>` | Print attribute value |
 | `pdf` | `[file]` | Save page as PDF |
-| `js` | `<expression>` | Evaluate JavaScript |
+| `js` | `<expression>` or `--file <path\|->` | Evaluate JavaScript |
+| `inject` | `add <name> <file\|->`, `remove <name>`, `clear`, `list` | Manage scripts that run in every page |
 | `click` | `<selector>` | Click element |
 | `input` | `<selector> <text>` | Type into input |
 | `clear` | `<selector>` | Clear input |
@@ -433,8 +460,8 @@ The tool uses the [rod](https://github.com/go-rod/rod) Go library which communic
 | `waitstable` | | Wait for DOM stability |
 | `waitidle` | | Wait for network idle |
 | `sleep` | `<seconds>` | Sleep N seconds |
-| `screenshot` | `[-w N] [-h N] [file]` | Page screenshot (optional viewport size) |
-| `screenshot-el` | `<selector> [file]` | Element screenshot |
+| `screenshot` | `[-w N] [-h N] [--scale N] [--frame] [file]` | Page screenshot (optional temporary viewport size and scale) |
+| `screenshot-el` | `<selector> [--include SEL]... [--margin N] [--scale N] [-w N -h N] [file]` | Element screenshot (optionally with more elements and a margin) |
 | `pages` | | List tabs |
 | `page` | `<index>` | Switch tab |
 | `newpage` | `[url]` | Open new tab |
