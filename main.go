@@ -43,13 +43,21 @@ const (
 // activeStateDir is set once at startup based on --local/--global flags.
 var activeStateDir string
 
-// extractScopeArgs scans args for --local/--global, removes them, and returns the mode.
-// If both appear, the last one wins.
+// extractScopeArgs removes --local/--global before -- and returns the mode.
+// If both appear before --, the last one wins. Arguments after -- are literal.
 func extractScopeArgs(args []string) (scopeMode, []string) {
 	mode := scopeAuto
 	var filtered []string
+	afterTerminator := false
 	for _, arg := range args {
+		if afterTerminator {
+			filtered = append(filtered, arg)
+			continue
+		}
 		switch arg {
+		case "--":
+			afterTerminator = true
+			filtered = append(filtered, arg)
 		case "--local":
 			mode = scopeLocal
 		case "--global":
@@ -127,7 +135,23 @@ func saveState(s *State) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(statePath(), data, 0644)
+	f, err := os.CreateTemp(stateDir(), ".state-*.json")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if err := f.Chmod(0644); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), statePath())
 }
 
 func removeState() {
@@ -258,6 +282,12 @@ func main() {
 		cmdClick(args)
 	case "input":
 		cmdInput(args)
+	case "key":
+		cmdKey(args)
+	case "mouse":
+		cmdMouse(args)
+	case "type":
+		cmdType(args)
 	case "clear":
 		cmdClear(args)
 	case "select":
@@ -352,6 +382,15 @@ func withPage() (*State, *rod.Browser, *rod.Page) {
 	return s, browser, page
 }
 
+// timedPage allows the requested delay in addition to the normal CDP timeout.
+func timedPage(page *rod.Page, duration time.Duration) *rod.Page {
+	page = page.CancelTimeout()
+	if duration > time.Duration(math.MaxInt64)-defaultTimeout {
+		return page
+	}
+	return page.Timeout(defaultTimeout + duration)
+}
+
 // --- Commands ---
 
 // startOptions holds the flags of the "start" command.
@@ -400,6 +439,18 @@ func cmdStart(args []string) {
 	if err != nil {
 		fatal("%s", err)
 	}
+	unlockRecord, err := lockRecord()
+	if err != nil {
+		fatal("%v", err)
+	}
+	active, err := recordingActiveLocked()
+	if err != nil {
+		fatal("%v", err)
+	}
+	if active {
+		unlockRecord()
+		fatal("stop the active recording before starting another browser")
+	}
 
 	// Check if already running
 	if s, err := loadState(); err == nil {
@@ -414,6 +465,7 @@ func cmdStart(args []string) {
 	if err := os.RemoveAll(injectDir()); err != nil {
 		fatal("failed to clear injected scripts: %v", err)
 	}
+	unlockRecord()
 
 	dataDir := filepath.Join(stateDir(), "chrome-data")
 	os.MkdirAll(dataDir, 0755)
@@ -640,8 +692,10 @@ func cmdOpen(args []string) {
 		if err != nil {
 			fatal("failed to create page: %v", err)
 		}
-		s.ActivePage = 0
-		saveState(s)
+		s, err = updateState(func(s *State) error { s.ActivePage = 0; return nil })
+		if err != nil {
+			fatal("failed to save state: %v", err)
+		}
 	} else {
 		page, err = getActivePage(browser, s)
 		if err != nil {
@@ -846,13 +900,43 @@ func cmdClick(args []string) {
 	if len(args) < 1 {
 		fatal("usage: rodney click <selector>")
 	}
-	_, _, page := withPage()
+	unlock, err := lockPointer()
+	if err != nil {
+		fatal("%v", err)
+	}
+	defer unlock()
+	state, _, page := withPage()
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
 	}
+	vp, err := pageViewport(page)
+	if err != nil {
+		fatal("%v", err)
+	}
+	store, err := readPointerStore()
+	if err != nil {
+		fatal("%v", err)
+	}
+	if _, err := currentPointer(store, state, page, vp); errors.Is(err, errPointerUncertain) {
+		fatal("%v", err)
+	}
+	marker := pointerSnapshot{Status: "in_progress"}
+	if err := savePointer(store, state, page, vp, marker); err != nil {
+		fatal("%v", err)
+	}
 	if err := el.Click(proto.InputMouseButtonLeft, 1); err != nil {
+		if releaseErr := page.Mouse.Up(proto.InputMouseButtonLeft, 1); releaseErr == nil {
+			pos := page.Mouse.Position()
+			_ = savePointer(store, state, page, vp, pointerSnapshot{X: pos.X, Y: pos.Y, Status: "ready"})
+		} else {
+			err = errors.Join(err, releaseErr)
+		}
 		fatal("click failed: %v", err)
+	}
+	pos := page.Mouse.Position()
+	if err := savePointer(store, state, page, vp, pointerSnapshot{X: pos.X, Y: pos.Y, Status: "ready"}); err != nil {
+		fatal("%v", err)
 	}
 	// Brief pause for click handlers to execute
 	time.Sleep(100 * time.Millisecond)
@@ -866,11 +950,28 @@ func cmdInput(args []string) {
 	_, _, page := withPage()
 	el, err := page.Element(args[0])
 	if err != nil {
-		fatal("element not found: %v", err)
+		fatal("input element not found")
 	}
 	text := strings.Join(args[1:], " ")
-	el.MustSelectAllText().MustInput(text)
-	fmt.Printf("Typed: %s\n", text)
+	if err := el.SelectAllText(); err != nil {
+		fatal("input selection failed")
+	}
+	if err := el.WaitEnabled(); err != nil {
+		fatal("input is not enabled")
+	}
+	if err := el.WaitWritable(); err != nil {
+		fatal("input is not writable")
+	}
+	if err := insertText(page, text); err != nil {
+		fatal("input failed")
+	}
+	if _, err := el.Eval(`() => {
+		this.dispatchEvent(new Event("input", {bubbles: true}));
+		this.dispatchEvent(new Event("change", {bubbles: true}));
+	}`); err != nil {
+		fatal("input event failed")
+	}
+	fmt.Println("Typed")
 }
 
 func cmdClear(args []string) {
@@ -1116,12 +1217,37 @@ func cmdHover(args []string) {
 	if len(args) < 1 {
 		fatal("usage: rodney hover <selector>")
 	}
-	_, _, page := withPage()
+	unlock, err := lockPointer()
+	if err != nil {
+		fatal("%v", err)
+	}
+	defer unlock()
+	state, _, page := withPage()
 	el, err := page.Element(args[0])
 	if err != nil {
 		fatal("element not found: %v", err)
 	}
-	el.MustHover()
+	vp, err := pageViewport(page)
+	if err != nil {
+		fatal("%v", err)
+	}
+	store, err := readPointerStore()
+	if err != nil {
+		fatal("%v", err)
+	}
+	if _, err := currentPointer(store, state, page, vp); errors.Is(err, errPointerUncertain) {
+		fatal("%v", err)
+	}
+	if err := savePointer(store, state, page, vp, pointerSnapshot{Status: "moving"}); err != nil {
+		fatal("%v", err)
+	}
+	if err := el.Hover(); err != nil {
+		fatal("hover failed: %v", err)
+	}
+	pos := page.Mouse.Position()
+	if err := savePointer(store, state, page, vp, pointerSnapshot{X: pos.X, Y: pos.Y, Status: "ready"}); err != nil {
+		fatal("%v", err)
+	}
 	fmt.Println("Hovered")
 }
 
@@ -1357,8 +1483,7 @@ func cmdPage(args []string) {
 	if idx < 0 || idx >= len(pages) {
 		fatal("page index %d out of range (0-%d)", idx, len(pages)-1)
 	}
-	s.ActivePage = idx
-	if err := saveState(s); err != nil {
+	if _, err := updateState(func(s *State) error { s.ActivePage = idx; return nil }); err != nil {
 		fatal("failed to save state: %v", err)
 	}
 	info, _ := pages[idx].Info()
@@ -1406,11 +1531,13 @@ func cmdNewPage(args []string) {
 	pages, _ := browser.Pages()
 	for i, p := range pages {
 		if p.TargetID == page.TargetID {
-			s.ActivePage = i
+			s, err = updateState(func(s *State) error { s.ActivePage = i; return nil })
+			if err != nil {
+				fatal("failed to save state: %v", err)
+			}
 			break
 		}
 	}
-	saveState(s)
 
 	info, _ := page.Info()
 	if info != nil {
@@ -1449,13 +1576,17 @@ func cmdClosePage(args []string) {
 	pages[idx].MustClose()
 
 	// Adjust active page
-	if s.ActivePage >= len(pages)-1 {
-		s.ActivePage = len(pages) - 2
+	if _, err := updateState(func(s *State) error {
+		if s.ActivePage >= len(pages)-1 {
+			s.ActivePage = len(pages) - 2
+		}
+		if s.ActivePage < 0 {
+			s.ActivePage = 0
+		}
+		return nil
+	}); err != nil {
+		fatal("failed to save state: %v", err)
 	}
-	if s.ActivePage < 0 {
-		s.ActivePage = 0
-	}
-	saveState(s)
 	fmt.Printf("Closed page %d\n", idx)
 }
 

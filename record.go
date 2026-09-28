@@ -47,6 +47,8 @@ func recordPath() string { return filepath.Join(stateDir(), "record.json") }
 
 func recordLockPath() string { return filepath.Join(stateDir(), "record.lock") }
 
+func recordWorkerLockPath() string { return filepath.Join(stateDir(), "record-worker.lock") }
+
 // The OS releases this lock if a process exits during a reservation or mutation.
 func lockRecord() (func(), error) {
 	if err := os.MkdirAll(stateDir(), 0700); err != nil {
@@ -194,12 +196,15 @@ func recordingActiveLocked() (bool, error) {
 		os.Remove(recordPath())
 		return false, nil
 	}
-	for i := 0; i < 3; i++ {
-		if _, err := requestRecorder(c, http.MethodGet, "status", time.Second); err == nil {
-			return true, nil
-		}
-		time.Sleep(100 * time.Millisecond)
+	workerLock := flock.New(recordWorkerLockPath())
+	dead, err := workerLock.TryLock()
+	if err != nil {
+		return false, fmt.Errorf("check recorder worker lock: %w", err)
 	}
+	if !dead {
+		return true, nil
+	}
+	workerLock.Unlock()
 	removeRecordTemp(c)
 	os.Remove(recordPath())
 	return false, nil
@@ -471,6 +476,11 @@ func cmdRecordWorker(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
+	workerLock := flock.New(recordWorkerLockPath())
+	if err := workerLock.Lock(); err != nil {
+		fatal("lock recorder worker: %v", err)
+	}
+	defer workerLock.Unlock()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		fatal("start recorder control endpoint: %v", err)

@@ -5,6 +5,7 @@ go 1.24.7
 require (
 	github.com/go-rod/rod v0.116.2
 	github.com/gofrs/flock v0.13.0
+	github.com/rivo/uniseg v0.4.7
 	github.com/ysmood/gson v0.7.3
 )
 

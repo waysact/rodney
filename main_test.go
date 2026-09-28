@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -707,6 +708,64 @@ func TestExtractScopeArgs_LastFlagWins(t *testing.T) {
 	mode, _ := extractScopeArgs([]string{"--local", "--global", "start"})
 	if mode != scopeGlobal {
 		t.Errorf("expected last flag (scopeGlobal) to win, got %v", mode)
+	}
+}
+
+func TestExtractScopeArgs_AfterTerminator(t *testing.T) {
+	for _, test := range []struct {
+		args      []string
+		mode      scopeMode
+		remaining []string
+	}{
+		{[]string{"--local", "type", "--", "--global"}, scopeLocal, []string{"type", "--", "--global"}},
+		{[]string{"type", "--", "--local"}, scopeAuto, []string{"type", "--", "--local"}},
+	} {
+		mode, remaining := extractScopeArgs(test.args)
+		if mode != test.mode || !slices.Equal(remaining, test.remaining) {
+			t.Errorf("extractScopeArgs(%q) = (%v, %q), want (%v, %q)", test.args, mode, remaining, test.mode, test.remaining)
+		}
+	}
+}
+
+func TestUpdateStateSerializesChanges(t *testing.T) {
+	t.Setenv("RODNEY_HOME", t.TempDir())
+	if err := saveState(&State{DebugURL: "browser"}); err != nil {
+		t.Fatal(err)
+	}
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := updateState(func(s *State) error {
+			close(firstEntered)
+			<-releaseFirst
+			s.Viewport = &Viewport{W: 900, H: 600}
+			return nil
+		})
+		firstResult <- err
+	}()
+	<-firstEntered
+	secondResult := make(chan error, 1)
+	go func() {
+		_, err := updateState(func(s *State) error {
+			s.Injects = []InjectEntry{{Name: "marker", Hash: "hash"}}
+			return nil
+		})
+		secondResult <- err
+	}()
+	close(releaseFirst)
+	if err := <-firstResult; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondResult; err != nil {
+		t.Fatal(err)
+	}
+	s, err := loadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Viewport == nil || *s.Viewport != (Viewport{W: 900, H: 600}) || len(s.Injects) != 1 || s.Injects[0].Name != "marker" {
+		t.Fatalf("concurrent state changes lost: %+v", s)
 	}
 }
 

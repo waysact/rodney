@@ -113,7 +113,7 @@ func cmdViewport(args []string) {
 	if len(args) > 1 {
 		fatal("usage: rodney viewport [WxH]")
 	}
-	s, _, page := withPage()
+	_, _, page := withPage()
 	if len(args) == 0 {
 		vp, err := pageViewport(page)
 		if err != nil {
@@ -129,8 +129,7 @@ func cmdViewport(args []string) {
 	if err := applyViewport(page, vp); err != nil {
 		fatal("%v", err)
 	}
-	s.Viewport = &vp
-	if err := saveState(s); err != nil {
+	if _, err := updateState(func(s *State) error { s.Viewport = &vp; return nil }); err != nil {
 		fatal("failed to save state: %v", err)
 	}
 	fmt.Println(vp)

@@ -28,7 +28,9 @@ Interaction:
   rodney js <expression>          Evaluate JavaScript expression
   rodney js --file <path|->       Run a script file at global scope (- for stdin)
   rodney click <selector>         Click an element
-  rodney input <selector> <text>  Type text into an input field
+  rodney input <selector> <text>  Replace text in an input field
+  rodney type [--delay ms] <text>  Type at the caret of the focused editable element
+  rodney key <key-or-chord>       Send a key or literal modifier chord
   rodney clear <selector>         Clear an input field
   rodney file <selector> <path|-> Set file on a file input (- for stdin)
   rodney download <sel> [file|-]  Download href/src target (- for stdout)
@@ -36,6 +38,22 @@ Interaction:
   rodney submit <selector>        Submit a form
   rodney hover <selector>         Hover over an element
   rodney focus <selector>         Focus an element
+  rodney mouse move [--anchor X%,Y%] [--duration ms] [--button left|middle|right] <target>
+                                  Move to a selector, viewport, or CSS coordinate x,y
+  rodney mouse click [--button left|middle|right]
+                                  Click at the established pointer position
+
+Typing uses one quoted shell argument for text with spaces. Delay applies
+between Unicode grapheme clusters. Key accepts Enter, Tab, Escape, ArrowUp,
+ArrowDown, ArrowLeft, ArrowRight, or Control/Meta/Alt/Shift plus one ASCII
+letter or digit. Modifiers are literal: Control+K and Meta+K differ. Browser
+or OS shortcuts can intercept chords. Typed text is absent from command output.
+Mouse move defaults to 500 ms. First set a position with --duration 0. Selector
+and viewport anchors default to 50%,50%; for example --anchor 30%,70%. A move
+with --button holds that button for the path and releases it in one command.
+Mouse commands do not scroll the page. Selector click and hover keep their
+existing scroll behavior. Pointer positions expire after a tab or viewport
+change; use --duration 0 to set a new position.
 
 Injected scripts:
   rodney inject add <name> <file|-> Run a script now and in every later page of this session

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/gofrs/flock"
 )
 
 func recordJPEG(t *testing.T, width, height int, c color.Color) []byte {
@@ -30,6 +31,39 @@ func recordJPEG(t *testing.T, width, height int, c color.Color) []byte {
 		t.Fatal(err)
 	}
 	return b.Bytes()
+}
+
+func TestRecordKeepsUnreachableLiveWorker(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("RODNEY_HOME", home)
+	workerLock := flock.New(filepath.Join(home, "record-worker.lock"))
+	if err := workerLock.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	defer workerLock.Unlock()
+	temp := filepath.Join(home, ".rodney-record-test.mp4")
+	if err := os.WriteFile(temp, []byte("unfinished"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := &recordControl{Token: "live", Port: 1, Output: filepath.Join(home, "take.mp4"), Temp: temp, Created: time.Now()}
+	if err := writeRecordControlLocked(c); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := lockRecord()
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := recordingActiveLocked()
+	unlock()
+	if err != nil || !active {
+		t.Fatalf("live worker reported inactive: active=%v err=%v", active, err)
+	}
+	if _, err := os.Stat(recordPath()); err != nil {
+		t.Fatalf("live control removed: %v", err)
+	}
+	if _, err := os.Stat(temp); err != nil {
+		t.Fatalf("live temporary video removed: %v", err)
+	}
 }
 
 func TestRecordFrameStaticAndTransition(t *testing.T) {

@@ -110,7 +110,11 @@ An injected script runs in the top frame of each page, once per document. Every 
 
 ```bash
 rodney click "button#submit"       # Click element
-rodney input "#search" "query"     # Type into input field
+rodney input "#search" "query"     # Replace input field text
+rodney focus "#search"             # Focus an editable element
+rodney type --delay 50 "new query"  # Type at the caret
+rodney key Control+K                # Send a literal Control chord
+rodney key Meta+K                   # Send a literal Meta chord
 rodney clear "#search"             # Clear input field
 rodney file "#upload" photo.png    # Set file on a file input
 rodney file "#upload" -            # Set file from stdin
@@ -121,6 +125,19 @@ rodney submit "form#login"         # Submit a form
 rodney hover ".menu-item"          # Hover over element
 rodney focus "#email"              # Focus element
 ```
+
+`type [--delay ms] <text>` edits the focused, enabled text input, textarea, or contenteditable element at its caret or selection. The delay is between Unicode grapheme clusters. Quote text with spaces. `input <selector> <text>` replaces the field content and emits its immediate input and change events. Entered text is absent from success output and Rodney trace output. `key <key-or-chord>` accepts Enter, Tab, Escape, the four Arrow names, or Control, Meta, Alt, and Shift with one ASCII letter or digit. Modifiers are literal on every host. Browser and OS shortcuts can intercept some chords.
+
+### Move and click the pointer
+
+```bash
+rodney mouse move --duration 0 "#source"
+rodney mouse move --duration 800 --button left "#drop"
+rodney mouse move --anchor 30%,70% viewport
+rodney mouse click --button right
+```
+
+`mouse move [--anchor X%,Y%] [--duration ms] [--button left|middle|right] <target>` accepts a CSS selector, `viewport`, or CSS pixel coordinates such as `250,150`. Selector and viewport anchors default to their centers. Motion defaults to 500 ms. Set an initial position with `--duration 0`; paced motion and clicks need an established position. A move with `--button` presses, moves, and releases in one command. `mouse click [--button left|middle|right]` clicks at the current position and defaults to left. Mouse commands do not scroll. Existing selector `hover` and `click` retain their scrolling behavior and set the current pointer position. A tab or viewport change invalidates the saved position. An interrupted button action requires a Chromium restart before further pointer input.
 
 ### Wait for conditions
 
@@ -466,7 +483,11 @@ The tool uses the [rod](https://github.com/go-rod/rod) Go library which communic
 | `inject` | `add <name> <file\|->`, `remove <name>`, `clear`, `list` | Manage scripts that run in every page |
 | `record` | `start [--fps N] <file.mp4>`, `stop` | Record the active page's viewport to a silent MP4 |
 | `click` | `<selector>` | Click element |
-| `input` | `<selector> <text>` | Type into input |
+| `input` | `<selector> <text>` | Replace input text |
+| `type` | `[--delay ms] <text>` | Type into the focused editable element |
+| `key` | `<key-or-chord>` | Send a named key or literal modifier chord |
+| `mouse` | `move [--anchor X%,Y%] [--duration ms] [--button left\|middle\|right] <target>` | Move or drag the pointer |
+| `mouse` | `click [--button left\|middle\|right]` | Click at the current pointer position |
 | `clear` | `<selector>` | Clear input |
 | `file` | `<selector> <path\|->` | Set file on a file input (`-` for stdin) |
 | `download` | `<selector> [file\|-]` | Download href/src target (`-` for stdout) |

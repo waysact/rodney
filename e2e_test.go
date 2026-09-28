@@ -106,6 +106,472 @@ func TestE2E_StartOpenTitle(t *testing.T) {
 	}
 }
 
+func TestE2E_Key(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/keyboard")
+	mustRodney(t, home, "focus", "#edit")
+	if _, _, code := runRodney(t, home, "key", "Control+Control+K"); code != 2 {
+		t.Fatalf("duplicate modifier exit = %d", code)
+	}
+	if got := mustRodney(t, home, "js", "keyEvents.length"); got != "0" {
+		t.Fatalf("invalid chord sent %s events", got)
+	}
+	mustRodney(t, home, "key", "Control+K")
+	mustRodney(t, home, "key", "Meta+K")
+	mustRodney(t, home, "key", "Shift+1")
+	var got []struct {
+		Type, Key         string
+		Shift, Ctrl, Meta bool
+	}
+	if err := json.Unmarshal([]byte(mustRodney(t, home, "js", "JSON.stringify(keyEvents)")), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 14 || got[10].Type != "beforeinput" || got[11].Type != "input" {
+		t.Fatalf("events = %+v", got)
+	}
+	got = append(got[:10], got[12:]...)
+	for i, want := range []struct {
+		typ, key          string
+		shift, ctrl, meta bool
+	}{
+		{"keydown", "Control", false, true, false}, {"keydown", "k", false, true, false},
+		{"keyup", "k", false, true, false}, {"keyup", "Control", false, false, false},
+		{"keydown", "Meta", false, false, true}, {"keydown", "k", false, false, true},
+		{"keyup", "k", false, false, true}, {"keyup", "Meta", false, false, false},
+		{"keydown", "Shift", true, false, false}, {"keydown", "!", true, false, false},
+		{"keyup", "!", true, false, false}, {"keyup", "Shift", false, false, false},
+	} {
+		e := got[i]
+		if e.Type != want.typ || e.Key != want.key || e.Shift != want.shift || e.Ctrl != want.ctrl || e.Meta != want.meta {
+			t.Fatalf("event %d = %+v, want %+v", i, e, want)
+		}
+	}
+}
+
+func TestE2E_Type(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/keyboard")
+	mustRodney(t, home, "focus", "#edit")
+	mustRodney(t, home, "js", `(() => { const e=document.querySelector('#edit'); e.value='abcd'; e.setSelectionRange(1,3); })()`)
+	if got := mustRodney(t, home, "type", "A!"); got != "Typed" {
+		t.Fatalf("output=%q", got)
+	}
+	if got := mustRodney(t, home, "js", `document.querySelector('#edit').value`); got != "aA!d" {
+		t.Fatalf("selection value=%q", got)
+	}
+	var keyEvents []struct {
+		Type, Key string
+		Shift     bool
+	}
+	if err := json.Unmarshal([]byte(mustRodney(t, home, "js", `JSON.stringify(keyEvents.filter(e => e.type === 'keydown' || e.type === 'keyup'))`)), &keyEvents); err != nil {
+		t.Fatal(err)
+	}
+	if len(keyEvents) != 8 || keyEvents[0].Key != "Shift" || keyEvents[1].Key != "A" || !keyEvents[1].Shift || keyEvents[2].Key != "A" || keyEvents[3].Key != "Shift" || keyEvents[5].Key != "!" || !keyEvents[5].Shift {
+		t.Fatalf("key events=%+v", keyEvents)
+	}
+	mustRodney(t, home, "js", `keyEvents.length=0`)
+	mustRodney(t, home, "type", "--delay", "25", "e\u0301👩‍💻")
+	if got := mustRodney(t, home, "js", `document.querySelector('#edit').value`); got != "aA!e\u0301👩‍💻d" {
+		t.Fatalf("Unicode value=%q", got)
+	}
+	if got := mustRodney(t, home, "js", `keyEvents.filter(e => e.type === 'input').length`); got != "2" {
+		t.Fatalf("Unicode input count=%s", got)
+	}
+	var inputTimes []float64
+	if err := json.Unmarshal([]byte(mustRodney(t, home, "js", `JSON.stringify(keyEvents.filter(e => e.type === 'input').map(e => e.time))`)), &inputTimes); err != nil {
+		t.Fatal(err)
+	}
+	if len(inputTimes) != 2 || inputTimes[1]-inputTimes[0] < 15 {
+		t.Fatalf("cluster input times=%v", inputTimes)
+	}
+	stdout, stderr, code := runRodney(t, home, "type", "private_type_probe_42")
+	if code != 0 || strings.Contains(stdout+stderr, "private_type_probe_42") {
+		t.Fatalf("type exit=%d output=%q stderr=%q", code, stdout, stderr)
+	}
+	mustRodney(t, home, "focus", "#area")
+	mustRodney(t, home, "type", "two words")
+	if got := mustRodney(t, home, "js", `document.querySelector('#area').value`); got != "two words" {
+		t.Fatalf("textarea=%q", got)
+	}
+	mustRodney(t, home, "focus", "#rich")
+	mustRodney(t, home, "type", "rich")
+	if got := mustRodney(t, home, "js", `document.querySelector('#rich').textContent`); got != "rich" {
+		t.Fatalf("contenteditable=%q", got)
+	}
+	mustRodney(t, home, "js", `(() => { const e=document.querySelector('#rich'); e.textContent='abcd'; const r=document.createRange(); r.setStart(e.firstChild,1); r.setEnd(e.firstChild,3); const s=getSelection(); s.removeAllRanges(); s.addRange(r); })()`)
+	mustRodney(t, home, "type", "Z")
+	if got := mustRodney(t, home, "js", `document.querySelector('#rich').textContent`); got != "aZd" {
+		t.Fatalf("contenteditable selection=%q", got)
+	}
+	mustRodney(t, home, "focus", "#form-input")
+	mustRodney(t, home, "key", "Enter")
+	if got := mustRodney(t, home, "js", "submits"); got != "1" {
+		t.Fatalf("form submissions=%s", got)
+	}
+	for _, selector := range []string{"#disabled", "#readonly"} {
+		mustRodney(t, home, "js", `document.activeElement.blur()`)
+		mustRodney(t, home, "focus", selector)
+		if _, _, code := runRodney(t, home, "type", "secret"); code != 2 {
+			t.Fatalf("%s type exit=%d", selector, code)
+		}
+	}
+	mustRodney(t, home, "focus", "#plain-focus")
+	if _, _, code := runRodney(t, home, "type", "secret"); code != 2 {
+		t.Fatalf("noneditable type exit=%d", code)
+	}
+}
+
+func TestE2E_TypeLiteralScopeFlags(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/keyboard")
+	mustRodney(t, home, "focus", "#edit")
+	mustRodney(t, home, "type", "--", "--local")
+	mustRodney(t, home, "type", "--", "--global")
+	if got := mustRodney(t, home, "js", `document.querySelector('#edit').value`); got != "--local--global" {
+		t.Fatalf("typed value = %q", got)
+	}
+}
+
+func TestE2E_TypeOutlastsPageTimeout(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/keyboard")
+	mustRodney(t, home, "focus", "#edit")
+	t.Setenv("ROD_TIMEOUT", "0.5")
+	mustRodney(t, home, "type", "--delay", "100", "abcdefghijkl")
+	t.Setenv("ROD_TIMEOUT", "")
+	if got := mustRodney(t, home, "js", `document.querySelector('#edit').value`); got != "abcdefghijkl" {
+		t.Fatalf("typed value = %q", got)
+	}
+}
+
+func TestE2E_InputReplacement(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/keyboard")
+	mustRodney(t, home, "js", `document.querySelector('#edit').value='private_probe_93'`)
+	stdout, stderr, code := runRodney(t, home, "input", "#edit", "replacement_probe_47")
+	if code != 0 || strings.Contains(stdout+stderr, "private_probe_93") || strings.Contains(stdout+stderr, "replacement_probe_47") {
+		t.Fatalf("input exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if got := mustRodney(t, home, "js", `document.querySelector('#edit').value`); got != "replacement_probe_47" {
+		t.Fatalf("replacement value=%q", got)
+	}
+	if got := mustRodney(t, home, "js", `keyEvents.filter(e => e.type === 'input' || e.type === 'change').map(e => e.type).join(',')`); got != "input,input,change" {
+		t.Fatalf("events=%q", got)
+	}
+	mustRodney(t, home, "clear", "#edit")
+	if got := mustRodney(t, home, "js", `document.querySelector('#edit').value`); got != "" {
+		t.Fatalf("clear value=%q", got)
+	}
+}
+
+func TestE2E_InputErrorsDoNotEcho(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/keyboard")
+	mustRodney(t, home, "js", `document.querySelector('#edit').dispatchEvent = function () { throw new Error(this.value); }`)
+	const inserted = "private_inserted_probe_178"
+	stdout, stderr, code := runRodney(t, home, "input", "#edit", inserted)
+	if code != 2 || stdout != "" || strings.Contains(stderr, inserted) {
+		t.Fatalf("event failure: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	mustRodney(t, home, "js", `(() => { const e=document.querySelector('#edit'); delete e.dispatchEvent; e.value='private_existing_probe_179'; e.select=function(){ throw new Error(this.value); }; })()`)
+	stdout, stderr, code = runRodney(t, home, "input", "#edit", "replacement")
+	if code != 2 || stdout != "" || strings.Contains(stderr, "private_existing_probe_179") {
+		t.Fatalf("selection failure: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestE2E_MouseTarget(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/mouse")
+	for _, tc := range []struct {
+		target  string
+		options []string
+		x, y    string
+	}{
+		{"#target", nil, "125", "120"},
+		{"viewport", nil, "640", "400"},
+		{"#target", []string{"--anchor", "30%,70%"}, "115", "128"},
+		{"30,70", nil, "30", "70"},
+	} {
+		args := []string{"mouse", "move", "--duration", "0", tc.target}
+		args = append(args, tc.options...)
+		mustRodney(t, home, args...)
+		if got := mustRodney(t, home, "js", `JSON.stringify(mouseEvents.at(-1))`); !strings.Contains(got, `"x":`+tc.x+`,`+`"y":`+tc.y) {
+			t.Fatalf("target=%q event=%s", tc.target, got)
+		}
+	}
+	for _, target := range []string{"#far", "#covered", "1300,20", "body"} {
+		if _, _, code := runRodney(t, home, "mouse", "move", "--duration", "0", target); code != 2 {
+			t.Fatalf("target %q exit=%d", target, code)
+		}
+	}
+	if got := mustRodney(t, home, "js", "scrollY"); got != "0" {
+		t.Fatalf("implicit scroll=%s", got)
+	}
+	mustRodney(t, home, "open", env.server.URL+"/fixture/plain")
+	mustRodney(t, home, "mouse", "move", "--duration", "0", "html")
+}
+
+func TestE2E_MouseMotion(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/mouse")
+	mustRodney(t, home, "mouse", "move", "--duration", "0", "100,200")
+	mustRodney(t, home, "js", "mouseEvents.length=0")
+	mustRodney(t, home, "mouse", "move", "--duration", "500", "700,300")
+	var events []struct {
+		X, Y, Time float64
+		Buttons    int
+	}
+	if err := json.Unmarshal([]byte(mustRodney(t, home, "js", "JSON.stringify(mouseEvents)")), &events); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) < 5 {
+		t.Fatalf("only %d move events", len(events))
+	}
+	last := events[len(events)-1]
+	if last.X != 700 || last.Y != 300 || last.Buttons != 0 {
+		t.Fatalf("last event=%+v", last)
+	}
+	for i, e := range events {
+		if e.X < 0 || e.X >= 1280 || e.Y < 0 || e.Y >= 800 {
+			t.Fatalf("event %d outside viewport: %+v", i, e)
+		}
+		if i > 0 && e.Time < events[i-1].Time {
+			t.Fatalf("event timestamps out of order")
+		}
+	}
+	t.Logf("500 ms request: %.1f ms of browser events", last.Time-events[0].Time)
+}
+
+func TestE2E_MouseClick(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/mouse")
+	mustRodney(t, home, "mouse", "move", "--duration", "0", "#target")
+	mustRodney(t, home, "js", "mouseEvents.length=0")
+	mustRodney(t, home, "mouse", "click")
+	if got := mustRodney(t, home, "js", `JSON.stringify(clickEvents)`); !strings.Contains(got, `"type":"click","button":0,"x":125,"y":120`) {
+		t.Fatalf("click event=%s", got)
+	}
+	if got := mustRodney(t, home, "js", "mouseEvents.length"); got != "0" {
+		t.Fatalf("click moved pointer: %s", got)
+	}
+	mustRodney(t, home, "mouse", "click", "--button", "right")
+	if got := mustRodney(t, home, "js", `clickEvents.some(e => e.type === 'contextmenu' && e.button === 2)`); got != "true" {
+		t.Fatalf("right click contextmenu=%s", got)
+	}
+	mustRodney(t, home, "mouse", "click", "--button", "middle")
+	if got := mustRodney(t, home, "js", `clickEvents.some(e => e.type === 'auxclick' && e.button === 1)`); got != "true" {
+		t.Fatalf("middle click auxclick=%s", got)
+	}
+}
+
+func TestE2E_MouseDrag(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/mouse")
+	mustRodney(t, home, "mouse", "move", "--duration", "0", "#source")
+	mustRodney(t, home, "mouse", "move", "--duration", "800", "--button", "left", "#drop")
+	if got := mustRodney(t, home, "js", `document.querySelector('#drop').textContent`); got != "dragged" {
+		t.Fatalf("drop content=%s", got)
+	}
+	got := mustRodney(t, home, "js", `dragEvents.join(',')`)
+	for _, event := range []string{"dragstart", "dragenter", "drop", "dragend"} {
+		if !strings.Contains(got, event) {
+			t.Fatalf("missing %s in %s", event, got)
+		}
+	}
+}
+
+func TestE2E_MouseDragOutlastsPageTimeout(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/mouse")
+	mustRodney(t, home, "mouse", "move", "--duration", "0", "#source")
+	t.Setenv("ROD_TIMEOUT", "0.5")
+	mustRodney(t, home, "mouse", "move", "--duration", "1200", "--button", "left", "#drop")
+	t.Setenv("ROD_TIMEOUT", "")
+	if got := mustRodney(t, home, "js", `document.querySelector('#drop').textContent`); got != "dragged" {
+		t.Fatalf("drop content = %q", got)
+	}
+	mustRodney(t, home, "mouse", "click")
+}
+
+func TestE2E_MouseLegacyPosition(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/mouse")
+	mustRodney(t, home, "hover", "#target")
+	mustRodney(t, home, "mouse", "move", "--duration", "40", "200,200")
+	mustRodney(t, home, "click", "#target")
+	mustRodney(t, home, "mouse", "move", "--duration", "40", "300,200")
+	if got := mustRodney(t, home, "js", `JSON.stringify(mouseEvents.at(-1))`); !strings.Contains(got, `"x":300,"y":200`) {
+		t.Fatalf("last move=%s", got)
+	}
+}
+
+func TestE2E_MouseLegacyScrollAndNavigation(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/mouse")
+	mustRodney(t, home, "hover", "#far")
+	if got := mustRodney(t, home, "js", "scrollY"); got == "0" {
+		t.Fatal("hover did not scroll to the selector")
+	}
+	mustRodney(t, home, "mouse", "move", "--duration", "30", "200,200")
+	mustRodney(t, home, "js", "scrollTo(0,0)")
+	mustRodney(t, home, "click", "#nav")
+	if got := mustRodney(t, home, "title"); got != "Plain" {
+		t.Fatalf("navigation title=%q", got)
+	}
+	mustRodney(t, home, "mouse", "move", "--duration", "30", "300,200")
+}
+
+func TestE2E_MouseLegacyClickClosesTab(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/mouse-parent")
+	mustRodney(t, home, "click", "#open")
+	eventually(t, "opened child tab", func() bool { return strings.Count(mustRodney(t, home, "pages"), "[1]") == 1 })
+	mustRodney(t, home, "page", "1")
+	t.Setenv("ROD_TIMEOUT", "2")
+	_, _, code := runRodney(t, home, "click", "#close")
+	t.Setenv("ROD_TIMEOUT", "")
+	if code != 0 && code != 2 {
+		t.Fatalf("click exit=%d", code)
+	}
+	if got := mustRodney(t, home, "title"); got != "Mouse parent" {
+		t.Fatalf("tab did not close; title=%q", got)
+	}
+	mustRodney(t, home, "mouse", "move", "--duration", "0", "viewport")
+}
+
+func TestE2E_MouseStateRecovery(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/mouse")
+	mustRodney(t, home, "mouse", "move", "--duration", "0", "#target")
+	mustRodney(t, home, "reload")
+	mustRodney(t, home, "mouse", "click")
+	t.Setenv("RODNEY_HOME", home)
+	setStatus := func(status string) {
+		store, err := readPointerStore()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for id, snapshot := range store.Entries {
+			snapshot.Status = status
+			store.Entries[id] = snapshot
+		}
+		if err := writePointerStore(store); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setStatus("moving")
+	if _, _, code := runRodney(t, home, "mouse", "click"); code != 2 {
+		t.Fatalf("stale moving click exit=%d", code)
+	}
+	mustRodney(t, home, "mouse", "move", "--duration", "0", "#target")
+	setStatus("in_progress")
+	if _, _, code := runRodney(t, home, "mouse", "move", "--duration", "0", "#target"); code != 2 {
+		t.Fatalf("uncertain move exit=%d", code)
+	}
+	if _, _, code := runRodney(t, home, "hover", "#target"); code != 2 {
+		t.Fatalf("uncertain hover exit=%d", code)
+	}
+	mustRodney(t, home, "stop")
+	mustRodney(t, home, "start")
+	mustRodney(t, home, "open", env.server.URL+"/fixture/mouse")
+	mustRodney(t, home, "mouse", "move", "--duration", "0", "#target")
+}
+
+func TestE2E_MouseStateInvalidation(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/mouse")
+	mustRodney(t, home, "mouse", "move", "--duration", "0", "#target")
+	mustRodney(t, home, "newpage", env.server.URL+"/fixture/mouse")
+	if _, _, code := runRodney(t, home, "mouse", "click"); code != 2 {
+		t.Fatalf("new tab click exit=%d", code)
+	}
+	mustRodney(t, home, "mouse", "move", "--duration", "0", "#target")
+	mustRodney(t, home, "viewport", "900x600")
+	if _, _, code := runRodney(t, home, "mouse", "click"); code != 2 {
+		t.Fatalf("resized viewport click exit=%d", code)
+	}
+	mustRodney(t, home, "mouse", "move", "--duration", "0", "#target")
+}
+
+func TestE2E_MouseUncertainAcrossTabs(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/mouse")
+	mustRodney(t, home, "mouse", "move", "--duration", "0", "#target")
+	t.Setenv("RODNEY_HOME", home)
+	store, err := readPointerStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for target, snapshot := range store.Entries {
+		snapshot.Status = "in_progress"
+		store.Entries[target] = snapshot
+	}
+	if err := writePointerStore(store); err != nil {
+		t.Fatal(err)
+	}
+	mustRodney(t, home, "newpage", env.server.URL+"/fixture/mouse")
+	for _, args := range [][]string{{"mouse", "move", "--duration", "0", "#target"}, {"hover", "#target"}, {"click", "#target"}} {
+		if _, _, code := runRodney(t, home, args...); code != 2 {
+			t.Fatalf("%v exited %d with uncertain button", args, code)
+		}
+	}
+	mustRodney(t, home, "closepage", "0")
+	if _, _, code := runRodney(t, home, "mouse", "move", "--duration", "0", "#target"); code != 2 {
+		t.Fatalf("closed target allowed pointer input: exit %d", code)
+	}
+	mustRodney(t, home, "stop")
+	mustRodney(t, home, "start")
+	mustRodney(t, home, "open", env.server.URL+"/fixture/mouse")
+	mustRodney(t, home, "mouse", "move", "--duration", "0", "#target")
+}
+
+func TestE2E_MouseConcurrentCommands(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/mouse")
+	mustRodney(t, home, "mouse", "move", "--duration", "0", "100,200")
+	mustRodney(t, home, "js", "mouseEvents.length=0")
+	t.Setenv("RODNEY_HOME", home)
+	first := exec.Command(rodneyBin, "mouse", "move", "--duration", "700", "700,200")
+	first.Env = append(os.Environ(), "RODNEY_HOME="+home)
+	if err := first.Start(); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "first mouse motion marker", func() bool {
+		store, err := readPointerStore()
+		if err != nil {
+			return false
+		}
+		for _, entry := range store.Entries {
+			if entry.Status == "moving" {
+				return true
+			}
+		}
+		return false
+	})
+	second := exec.Command(rodneyBin, "mouse", "move", "--duration", "40", "200,200")
+	second.Env = append(os.Environ(), "RODNEY_HOME="+home)
+	secondOutput, secondErr := second.CombinedOutput()
+	firstErr := first.Wait()
+	if firstErr != nil || secondErr != nil {
+		t.Fatalf("first=%v second=%v output=%s", firstErr, secondErr, secondOutput)
+	}
+	var events []struct{ X, Y float64 }
+	if err := json.Unmarshal([]byte(mustRodney(t, home, "js", "JSON.stringify(mouseEvents)")), &events); err != nil {
+		t.Fatal(err)
+	}
+	firstEnd := -1
+	for i, e := range events {
+		if e.X == 700 && e.Y == 200 {
+			firstEnd = i
+			break
+		}
+	}
+	if firstEnd < 0 || firstEnd >= len(events)-1 || events[len(events)-1].X != 200 {
+		t.Fatalf("commands did not complete in order: %v", events)
+	}
+}
+
 func writeScript(t *testing.T, src string) string {
 	t.Helper()
 	file := filepath.Join(t.TempDir(), "inject.js")
@@ -211,6 +677,40 @@ func TestE2E_InjectAddChangedConst(t *testing.T) {
 	}
 	if got := mustRodney(t, home, "inject", "list"); strings.Count(got, "presenter") != 1 {
 		t.Fatalf("inject list = %q, want one presenter entry", got)
+	}
+}
+
+func TestE2E_InjectSnapshotPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes do not apply on Windows")
+	}
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/plain")
+	mustRodney(t, home, "inject", "add", "private", writeScript(t, "window.privateMarker = 1"))
+	dir := filepath.Join(home, "inject")
+	file := filepath.Join(dir, "private.js")
+	for _, item := range []struct {
+		path string
+		want os.FileMode
+	}{{dir, 0700}, {file, 0600}} {
+		info, err := os.Stat(item.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != item.want {
+			t.Errorf("%s mode = %04o, want %04o", item.path, info.Mode().Perm(), item.want)
+		}
+	}
+	if err := os.Chmod(file, 0644); err != nil {
+		t.Fatal(err)
+	}
+	mustRodney(t, home, "inject", "add", "private", writeScript(t, "window.privateMarker = 2"))
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("updated snapshot mode = %04o, want 0600", info.Mode().Perm())
 	}
 }
 
@@ -592,6 +1092,28 @@ func TestE2E_RodneyStopFinalizesRecording(t *testing.T) {
 	mustRodney(t, home, "stop")
 	if info, err := os.Stat(file); err != nil || info.Size() == 0 {
 		t.Fatalf("stop did not finalize video: %v", err)
+	}
+}
+
+func TestE2E_StartPreservesActiveRecording(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg unavailable")
+	}
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/plain")
+	file := filepath.Join(t.TempDir(), "kept.mp4")
+	mustRodney(t, home, "record", "start", file)
+	_, stderr, code := runRodney(t, home, "start")
+	if code != 2 || !strings.Contains(stderr, "recording") {
+		runRodney(t, home, "record", "stop")
+		t.Fatalf("start during recording: exit %d, stderr %q", code, stderr)
+	}
+	if got := mustRodney(t, home, "title"); got != "Plain" {
+		t.Fatalf("browser changed after rejected start: title %q", got)
+	}
+	mustRodney(t, home, "record", "stop")
+	if info, err := os.Stat(file); err != nil || info.Size() == 0 {
+		t.Fatalf("recording lost after rejected start: %v", err)
 	}
 }
 

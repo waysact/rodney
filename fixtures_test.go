@@ -57,6 +57,41 @@ else setTimeout(() => location.search = 'reloaded', 2500);
 </script></body></html>`,
 	"record-green": `<!DOCTYPE html><html><body style="margin:0;background:green"></body></html>`,
 	"record-blue":  `<!DOCTYPE html><html><body style="margin:0;background:blue"></body></html>`,
+	"keyboard": `<!DOCTYPE html><html><body>
+<input id="edit" value=""><input id="other" value=""><input id="disabled" disabled>
+<input id="readonly" readonly><textarea id="area"></textarea><div id="rich" contenteditable="true"></div>
+<div id="plain-focus" tabindex="0"></div><form id="enter-form"><input id="form-input"></form>
+<script>
+window.keyEvents = [];
+window.submits = 0;
+document.querySelector('#enter-form').addEventListener('submit', e => { e.preventDefault(); submits++; });
+for (const type of ['keydown','keyup','beforeinput','input','change']) {
+ document.addEventListener(type, e => keyEvents.push({type, key:e.key || '', shift:e.shiftKey || false, ctrl:e.ctrlKey || false, meta:e.metaKey || false, value:e.target.value || '', time:performance.now()}));
+}
+</script></body></html>`,
+	"mouse": `<!DOCTYPE html><html><head><style>
+body { margin:0; height:2200px; }
+#target { position:absolute; left:100px; top:100px; width:50px; height:40px; background:red; }
+#far { position:absolute; left:100px; top:1500px; width:50px; height:40px; background:blue; }
+#covered { position:absolute; left:300px; top:100px; width:50px; height:40px; background:green; }
+#overlay { position:absolute; left:300px; top:100px; width:50px; height:40px; background:orange; }
+#source { position:absolute; left:100px; top:400px; width:80px; height:80px; background:purple; }
+#drop { position:absolute; left:400px; top:400px; width:100px; height:100px; background:yellow; }
+#nav { position:absolute; left:550px; top:100px; }
+#close { position:absolute; left:700px; top:100px; }
+</style></head><body><div id="target"></div><div id="far"></div><div id="covered"></div><div id="overlay"></div>
+<div id="source" draggable="true">drag</div><div id="drop">drop here</div><a id="nav" href="/fixture/plain">navigate</a><button id="close" onclick="window.close()">close</button>
+<script>
+window.mouseEvents=[]; window.dragEvents=[]; window.clickEvents=[];
+addEventListener('mousemove', e => mouseEvents.push({x:e.clientX,y:e.clientY,time:performance.now(),buttons:e.buttons}));
+for (const type of ['click','auxclick','contextmenu']) addEventListener(type,e => clickEvents.push({type,button:e.button,x:e.clientX,y:e.clientY}));
+for (const type of ['dragstart','dragenter','dragover','drop','dragend']) addEventListener(type,e => dragEvents.push(type));
+document.querySelector('#source').addEventListener('dragstart',e => e.dataTransfer.setData('text/plain','dragged'));
+document.querySelector('#drop').addEventListener('dragover',e => e.preventDefault());
+document.querySelector('#drop').addEventListener('drop',e => { e.preventDefault(); e.target.textContent=e.dataTransfer.getData('text/plain'); });
+</script>
+</body></html>`,
+	"mouse-parent": `<!DOCTYPE html><html><head><title>Mouse parent</title></head><body><a id="open" target="_blank" href="/fixture/mouse">open child</a></body></html>`,
 }
 
 func handleFixture(w http.ResponseWriter, r *http.Request) {

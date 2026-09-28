@@ -98,11 +98,6 @@ func injectAdd(page *rod.Page, s *State, name, src string) error {
 		return err
 	}
 	defer unlock()
-	current, err := loadState()
-	if err != nil {
-		return err
-	}
-	*s = *current
 	if !injectNameRe.MatchString(name) {
 		return fmt.Errorf("invalid script name %q (use letters, digits, - and _)", name)
 	}
@@ -119,21 +114,42 @@ func injectAdd(page *rod.Page, s *State, name, src string) error {
 	} else if message != "" {
 		return fmt.Errorf("script threw: %s", message)
 	}
-	if err := os.MkdirAll(injectDir(), 0755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(injectPath(name), []byte(src), 0644); err != nil {
-		return err
-	}
-	entry := InjectEntry{Name: name, Hash: hash}
-	for i, e := range s.Injects {
-		if e.Name == name {
-			s.Injects[i] = entry
-			return saveState(s)
+	current, err := updateState(func(current *State) error {
+		if err := os.MkdirAll(injectDir(), 0700); err != nil {
+			return err
 		}
+		if err := os.Chmod(injectDir(), 0700); err != nil {
+			return err
+		}
+		f, err := os.CreateTemp(injectDir(), ".inject-*.js")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(f.Name())
+		if _, err := f.Write([]byte(src)); err != nil {
+			f.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+		if err := os.Rename(f.Name(), injectPath(name)); err != nil {
+			return err
+		}
+		entry := InjectEntry{Name: name, Hash: hash}
+		for i, e := range current.Injects {
+			if e.Name == name {
+				current.Injects[i] = entry
+				return nil
+			}
+		}
+		current.Injects = append(current.Injects, entry)
+		return nil
+	})
+	if err == nil {
+		*s = *current
 	}
-	s.Injects = append(s.Injects, entry)
-	return saveState(s)
+	return err
 }
 
 // injectRemove stops future injection. Existing documents keep the script.
@@ -143,21 +159,22 @@ func injectRemove(s *State, name string) error {
 		return err
 	}
 	defer unlock()
-	current, err := loadState()
-	if err != nil {
-		return err
-	}
-	*s = *current
-	for i, e := range s.Injects {
-		if e.Name == name {
-			if err := os.Remove(injectPath(name)); err != nil && !os.IsNotExist(err) {
-				return err
+	current, err := updateState(func(current *State) error {
+		for i, e := range current.Injects {
+			if e.Name == name {
+				if err := os.Remove(injectPath(name)); err != nil && !os.IsNotExist(err) {
+					return err
+				}
+				current.Injects = append(current.Injects[:i], current.Injects[i+1:]...)
+				return nil
 			}
-			s.Injects = append(s.Injects[:i], s.Injects[i+1:]...)
-			return saveState(s)
 		}
+		return fmt.Errorf("no injected script named %q", name)
+	})
+	if err == nil {
+		*s = *current
 	}
-	return fmt.Errorf("no injected script named %q", name)
+	return err
 }
 
 func injectClear(s *State) error {
@@ -166,16 +183,17 @@ func injectClear(s *State) error {
 		return err
 	}
 	defer unlock()
-	current, err := loadState()
-	if err != nil {
-		return err
+	current, err := updateState(func(current *State) error {
+		if err := os.RemoveAll(injectDir()); err != nil {
+			return err
+		}
+		current.Injects = nil
+		return nil
+	})
+	if err == nil {
+		*s = *current
 	}
-	*s = *current
-	if err := os.RemoveAll(injectDir()); err != nil {
-		return err
-	}
-	s.Injects = nil
-	return saveState(s)
+	return err
 }
 
 func cmdInject(args []string) {
