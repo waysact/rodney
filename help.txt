@@ -43,6 +43,12 @@ Injected scripts:
   rodney inject clear             Stop injecting all scripts
   rodney inject list              List injected scripts
 
+Recording (requires ffmpeg with libx264):
+  rodney record start [--fps N] <file.mp4>
+                                     Record the active page's viewport to a silent MP4
+                                     Output rate: 1-30 fps (default 15)
+  rodney record stop               Finish and save the recording
+
 Waiting:
   rodney wait <selector>          Wait for element to appear
   rodney waitload                 Wait for page load

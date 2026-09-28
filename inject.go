@@ -93,6 +93,16 @@ func applyInjects(page *rod.Page, s *State, warn io.Writer) error {
 // injectAdd runs a script in the active page and stores a snapshot if it
 // succeeds. Adding the same name replaces its script in the same position.
 func injectAdd(page *rod.Page, s *State, name, src string) error {
+	unlock, err := lockRecordingMutation()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	current, err := loadState()
+	if err != nil {
+		return err
+	}
+	*s = *current
 	if !injectNameRe.MatchString(name) {
 		return fmt.Errorf("invalid script name %q (use letters, digits, - and _)", name)
 	}
@@ -128,6 +138,16 @@ func injectAdd(page *rod.Page, s *State, name, src string) error {
 
 // injectRemove stops future injection. Existing documents keep the script.
 func injectRemove(s *State, name string) error {
+	unlock, err := lockRecordingMutation()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	current, err := loadState()
+	if err != nil {
+		return err
+	}
+	*s = *current
 	for i, e := range s.Injects {
 		if e.Name == name {
 			if err := os.Remove(injectPath(name)); err != nil && !os.IsNotExist(err) {
@@ -141,6 +161,16 @@ func injectRemove(s *State, name string) error {
 }
 
 func injectClear(s *State) error {
+	unlock, err := lockRecordingMutation()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	current, err := loadState()
+	if err != nil {
+		return err
+	}
+	*s = *current
 	if err := os.RemoveAll(injectDir()); err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -213,6 +214,8 @@ func main() {
 	switch cmd {
 	case "_proxy":
 		cmdInternalProxy(args) // hidden: runs the auth proxy helper
+	case "_record":
+		cmdRecordWorker(args)
 	case "start":
 		cmdStart(args)
 	case "connect":
@@ -249,6 +252,8 @@ func main() {
 		cmdJS(args)
 	case "inject":
 		cmdInject(args)
+	case "record":
+		cmdRecord(args)
 	case "click":
 		cmdClick(args)
 	case "input":
@@ -544,6 +549,15 @@ func cmdStop(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
+	var recordingErr error
+	if c, err := readRecordControl(); err != nil {
+		fatal("%v", err)
+	} else if c != nil {
+		_, recordingErr = stopRecording()
+		if errors.Is(recordingErr, errRecordUnconfirmed) {
+			fatal("%v", recordingErr)
+		}
+	}
 	browser, err := connectBrowser(s)
 	if err != nil {
 		// Try to kill by PID only if we launched the browser
@@ -568,6 +582,9 @@ func cmdStop(args []string) {
 		fatal("failed to clear injected scripts: %v", err)
 	}
 	removeState()
+	if recordingErr != nil {
+		fatal("Chrome stopped; %v", recordingErr)
+	}
 	fmt.Println("Chrome stopped")
 }
 

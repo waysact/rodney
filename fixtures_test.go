@@ -51,6 +51,12 @@ div { position: absolute; background: #ff0000; }
 body { margin: 0; }
 #big { position: absolute; left: 0; top: 0; width: 600px; height: 500px; background: #ff0000; }
 </style></head><body><div id="big"></div></body></html>`,
+	"record-reload": `<!DOCTYPE html><html><body style="margin:0;background:green"><script>
+if (location.search) document.body.style.background = window.presenterLoaded ? 'red' : 'blue';
+else setTimeout(() => location.search = 'reloaded', 2500);
+</script></body></html>`,
+	"record-green": `<!DOCTYPE html><html><body style="margin:0;background:green"></body></html>`,
+	"record-blue":  `<!DOCTYPE html><html><body style="margin:0;background:blue"></body></html>`,
 }
 
 func handleFixture(w http.ResponseWriter, r *http.Request) {

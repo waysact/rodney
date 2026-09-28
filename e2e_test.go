@@ -2,13 +2,18 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -467,5 +472,352 @@ func TestE2E_ScreenshotElOutput(t *testing.T) {
 	assertSize(t, decodePNG(t, data), 60, 50)
 	if _, _, code := runRodney(t, home, "screenshot-el", "#target", "--frame", file); code != 2 {
 		t.Fatalf("screenshot-el --frame exited %d, want 2", code)
+	}
+}
+
+func TestE2E_RecordLifecycle(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg unavailable")
+	}
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/record-reload")
+	mustRodney(t, home, "inject", "add", "presenter", writeScript(t, "window.presenterLoaded = true"))
+	file := filepath.Join(t.TempDir(), "take.mp4")
+	if got := mustRodney(t, home, "record", "start", file); got != file {
+		t.Fatalf("start printed %q, want %q", got, file)
+	}
+	if _, _, code := runRodney(t, home, "record", "start", filepath.Join(t.TempDir(), "second.mp4")); code != 2 {
+		t.Fatalf("second start exited %d, want 2", code)
+	}
+	if _, _, code := runRodney(t, home, "inject", "add", "other", writeScript(t, "window.other=true")); code != 2 {
+		t.Fatalf("inject add during recording exited %d, want 2", code)
+	}
+	if _, _, code := runRodney(t, home, "inject", "remove", "presenter"); code != 2 {
+		t.Fatalf("inject remove during recording exited %d, want 2", code)
+	}
+	if _, _, code := runRodney(t, home, "inject", "clear"); code != 2 {
+		t.Fatalf("inject clear during recording exited %d, want 2", code)
+	}
+	time.Sleep(4 * time.Second)
+	if got := mustRodney(t, home, "record", "stop"); !strings.Contains(got, file) {
+		t.Fatalf("stop printed %q", got)
+	}
+	if _, err := os.Stat(file); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code := runRodney(t, home, "record", "stop"); code != 2 {
+		t.Fatalf("second stop exited %d, want 2", code)
+	}
+	if got := mustRodney(t, home, "inject", "list"); !strings.Contains(got, "presenter") {
+		t.Fatalf("injection changed during take: %q", got)
+	}
+}
+
+func TestE2E_RecordCustomFPS(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg unavailable")
+	}
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe unavailable")
+	}
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/record-green")
+	file := filepath.Join(t.TempDir(), "thirty.mp4")
+	mustRodney(t, home, "record", "start", "--fps", "30", file)
+	time.Sleep(1200 * time.Millisecond)
+	mustRodney(t, home, "record", "stop")
+	out, err := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate:format=duration", "-of", "default=noprint_wrappers=1", file).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ffprobe: %v: %s", err, out)
+	}
+	if !strings.Contains(string(out), "r_frame_rate=30/1") {
+		t.Fatalf("recording frame rate: %s", out)
+	}
+	var duration float64
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "duration=") {
+			duration, err = strconv.ParseFloat(strings.TrimPrefix(line, "duration="), 64)
+			if err != nil {
+				t.Fatalf("duration: %v", err)
+			}
+		}
+	}
+	if duration < 1 || duration > 2.2 {
+		t.Fatalf("recording duration %.2fs, want about 1.2s", duration)
+	}
+}
+
+func TestE2E_RecordRejectsInvalidFPS(t *testing.T) {
+	home := startSession(t)
+	for _, fps := range []string{"0", "31", "oops"} {
+		file := filepath.Join(t.TempDir(), "invalid.mp4")
+		_, stderr, code := runRodney(t, home, "record", "start", "--fps", fps, file)
+		if code != 2 || !strings.Contains(stderr, "fps") {
+			t.Fatalf("fps %q: exit %d, stderr %q", fps, code, stderr)
+		}
+		if _, err := os.Stat(file); !os.IsNotExist(err) {
+			t.Fatalf("fps %q created output: %v", fps, err)
+		}
+	}
+}
+
+func TestE2E_RecordRejectsExistingFile(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg unavailable")
+	}
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/plain")
+	file := filepath.Join(t.TempDir(), "existing.mp4")
+	if err := os.WriteFile(file, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code := runRodney(t, home, "record", "start", file); code != 2 {
+		t.Fatalf("start on existing file exited %d, want 2", code)
+	}
+	data, err := os.ReadFile(file)
+	if err != nil || string(data) != "keep" {
+		t.Fatalf("existing file changed: %q, %v", data, err)
+	}
+}
+
+func TestE2E_RodneyStopFinalizesRecording(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg unavailable")
+	}
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/plain")
+	file := filepath.Join(t.TempDir(), "stopped.mp4")
+	mustRodney(t, home, "record", "start", file)
+	time.Sleep(time.Second)
+	mustRodney(t, home, "stop")
+	if info, err := os.Stat(file); err != nil || info.Size() == 0 {
+		t.Fatalf("stop did not finalize video: %v", err)
+	}
+}
+
+func TestE2E_RecordTargetStaysOnOriginalPage(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg unavailable")
+	}
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/record-green")
+	file := filepath.Join(t.TempDir(), "target.mp4")
+	mustRodney(t, home, "record", "start", file)
+	mustRodney(t, home, "newpage", env.server.URL+"/fixture/record-blue")
+	time.Sleep(1200 * time.Millisecond)
+	mustRodney(t, home, "record", "stop")
+	out, err := exec.Command("ffmpeg", "-v", "error", "-i", file, "-vf", "scale=1:1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1").CombinedOutput()
+	if err != nil {
+		t.Fatalf("decode video: %v: %s", err, out)
+	}
+	if len(out) < 3 {
+		t.Fatal("recording has no frames")
+	}
+	for i := 0; i+2 < len(out); i += 3 {
+		if out[i+1] < 75 || out[i] > 75 || out[i+2] > 75 {
+			t.Fatalf("frame %d is not original green tab: %v", i/3, out[i:i+3])
+		}
+	}
+}
+
+func TestE2E_RecordClosedTargetRecovers(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg unavailable")
+	}
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/record-green")
+	mustRodney(t, home, "newpage", env.server.URL+"/fixture/record-blue")
+	file := filepath.Join(t.TempDir(), "closed.mp4")
+	mustRodney(t, home, "record", "start", file)
+	mustRodney(t, home, "closepage")
+	eventually(t, "recording worker to report closed page", func() bool {
+		data, err := os.ReadFile(filepath.Join(home, "record.json"))
+		if err != nil {
+			return false
+		}
+		var control recordControl
+		return json.Unmarshal(data, &control) == nil && control.Error != ""
+	})
+	if _, errOut, code := runRodney(t, home, "record", "stop"); code != 2 || !strings.Contains(errOut, "recorded page or browser closed") {
+		t.Fatalf("stop after page close: exit %d, stderr %q", code, errOut)
+	}
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("failed recording presented an output file: %v", err)
+	}
+	next := filepath.Join(t.TempDir(), "next.mp4")
+	mustRodney(t, home, "record", "start", next)
+	mustRodney(t, home, "record", "stop")
+}
+
+func TestE2E_RecordMissingFFmpeg(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/plain")
+	t.Setenv("PATH", "/nonexistent")
+	if _, errOut, code := runRodney(t, home, "record", "start", filepath.Join(t.TempDir(), "missing.mp4")); code != 2 || !strings.Contains(errOut, "ffmpeg") {
+		t.Fatalf("missing ffmpeg: exit %d, stderr %q", code, errOut)
+	}
+}
+
+func TestE2E_RecordDimensionChangeFails(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg unavailable")
+	}
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/record-green")
+	file := filepath.Join(t.TempDir(), "resized.mp4")
+	mustRodney(t, home, "record", "start", file)
+	mustRodney(t, home, "viewport", "1000x700")
+	eventually(t, "recording worker to report frame dimension change", func() bool {
+		data, err := os.ReadFile(filepath.Join(home, "record.json"))
+		if err != nil {
+			return false
+		}
+		var control recordControl
+		return json.Unmarshal(data, &control) == nil && strings.Contains(control.Error, "dimensions changed")
+	})
+	if _, errOut, code := runRodney(t, home, "record", "stop"); code != 2 || !strings.Contains(errOut, "dimensions changed") {
+		t.Fatalf("stop after resize: exit %d, stderr %q", code, errOut)
+	}
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("resized take became an output file: %v", err)
+	}
+}
+
+func TestE2E_RodneyStopCleansUpFailedRecording(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg unavailable")
+	}
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/record-green")
+	mustRodney(t, home, "newpage", env.server.URL+"/fixture/record-blue")
+	mustRodney(t, home, "record", "start", filepath.Join(t.TempDir(), "failed.mp4"))
+	mustRodney(t, home, "closepage")
+	eventually(t, "recording failure", func() bool {
+		data, err := os.ReadFile(filepath.Join(home, "record.json"))
+		if err != nil {
+			return false
+		}
+		var control recordControl
+		return json.Unmarshal(data, &control) == nil && control.Error != ""
+	})
+	if _, errOut, code := runRodney(t, home, "stop"); code != 2 || !strings.Contains(errOut, "recording failed") {
+		t.Fatalf("rodney stop after recording failure: exit %d, stderr %q", code, errOut)
+	}
+	if got := mustRodney(t, home, "status"); got != "No active browser session" {
+		t.Fatalf("status after failed stop = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(home, "record.json")); !os.IsNotExist(err) {
+		t.Fatalf("recorder metadata remains: %v", err)
+	}
+}
+
+func TestE2E_RecordDeadWorkerRecovers(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg unavailable")
+	}
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/record-green")
+	outDir := t.TempDir()
+	first := filepath.Join(outDir, "killed.mp4")
+	mustRodney(t, home, "record", "start", first)
+	data, err := os.ReadFile(filepath.Join(home, "record.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var control recordControl
+	if err := json.Unmarshal(data, &control); err != nil {
+		t.Fatal(err)
+	}
+	proc, err := os.FindProcess(control.PID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := proc.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "dead worker endpoint", func() bool {
+		_, err := requestRecorder(&control, http.MethodGet, "status", 200*time.Millisecond)
+		return err != nil
+	})
+	next := filepath.Join(outDir, "next.mp4")
+	mustRodney(t, home, "record", "start", next)
+	mustRodney(t, home, "record", "stop")
+	if _, err := os.Stat(first); !os.IsNotExist(err) {
+		t.Fatalf("killed take became completed output: %v", err)
+	}
+	temps, err := filepath.Glob(filepath.Join(outDir, ".rodney-record-*.mp4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(temps) != 0 {
+		t.Fatalf("orphaned temporary MP4s: %v", temps)
+	}
+}
+
+func TestE2E_RodneyStopWaitsForRecorderStartup(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/plain")
+	control := recordControl{Token: "pending", Created: time.Now().Add(-14 * time.Second), Output: filepath.Join(t.TempDir(), "pending.mp4")}
+	data, err := json.Marshal(control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, "record.json")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code := runRodney(t, home, "stop"); code != 2 {
+		t.Fatalf("stop while recorder starting exited %d, want 2", code)
+	}
+	if got := mustRodney(t, home, "status"); !strings.Contains(got, "Browser running") {
+		t.Fatalf("browser closed during recorder startup: %q", got)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestE2E_RecordConcurrentStartAfterStaleState(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg unavailable")
+	}
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/record-green")
+	stale := recordControl{Token: "stale", Created: time.Now().Add(-time.Minute), Output: filepath.Join(t.TempDir(), "stale.mp4"), Error: "dead worker"}
+	data, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "record.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	const callers = 10
+	outDir := t.TempDir()
+	gate := make(chan struct{})
+	results := make(chan int, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-gate
+			_, _, code := runRodney(t, home, "record", "start", filepath.Join(outDir, fmt.Sprintf("take-%d.mp4", i)))
+			results <- code
+		}(i)
+	}
+	close(gate)
+	wg.Wait()
+	close(results)
+	successes := 0
+	for code := range results {
+		if code == 0 {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Errorf("%d concurrent record starts succeeded, want exactly one", successes)
+	}
+	if successes > 0 {
+		runRodney(t, home, "record", "stop")
 	}
 }

@@ -35,6 +35,7 @@ go build -o rodney .
 Requires:
 - Go 1.21+
 - Google Chrome or Chromium installed (or set `ROD_CHROME_BIN=/path/to/chrome`)
+- ffmpeg with the `libx264` encoder for `record` commands
 
 ## Usage
 
@@ -144,6 +145,23 @@ rodney screenshot-el "#save" --include ".popover" --margin 16 save.png  # Elemen
 ```
 
 Without `-w` or `-h`, a screenshot uses the current viewport and does not change the page. With `-w` or `-h`, rodney sets the size for this capture only, waits two animation frames so that the page can react, and then sets the viewport back. Without `-h`, the screenshot shows the full page.
+
+### Record the active page
+
+```bash
+rodney inject add presenter presenter.js
+rodney record start take.mp4
+# Interact with the page or let it navigate and reload
+rodney record stop
+
+# Use a higher output rate when the MP4 needs smoother motion
+rodney record start --fps 30 smooth-take.mp4
+rodney record stop
+```
+
+`record start` waits for the first captured frame before it returns. The take stays bound to that page even if you switch tabs. It captures the current CSS viewport at one image pixel per CSS pixel as a silent H.264 MP4. Output defaults to 15 fps; `--fps N` accepts 1 through 30. A higher output rate can preserve more motion when Chromium supplies enough frames, but cannot make Chromium capture faster. It does not resize the page, and it fails if the frame dimensions change during the take. Install or update injected scripts before starting: script add, remove, and clear are unavailable while recording. `rodney stop` finishes an active recording before shutting down Chrome. The output directory must exist, and the MP4 path must not exist already. Browser tabs and the address bar are outside the recording; use the existing headed Chrome/Xvfb capture route when you need real browser chrome.
+
+The page recording excludes the X11 pointer but includes cursors drawn by the page or an injected script. A full-display `ffmpeg -f x11grab` recording includes the X11 pointer by default; pass `-draw_mouse 0` before `-i` to hide it. Keep the MP4 as the capture master. At publication time, [attach it as a video with GitHub CLI](https://docs.github.com/en/github-cli/github-cli/attaching-files-with-github-cli) or convert a copy to GIF when an automatically animated image is wanted.
 
 ### Manage tabs
 
@@ -446,6 +464,7 @@ The tool uses the [rod](https://github.com/go-rod/rod) Go library which communic
 | `pdf` | `[file]` | Save page as PDF |
 | `js` | `<expression>` or `--file <path\|->` | Evaluate JavaScript |
 | `inject` | `add <name> <file\|->`, `remove <name>`, `clear`, `list` | Manage scripts that run in every page |
+| `record` | `start [--fps N] <file.mp4>`, `stop` | Record the active page's viewport to a silent MP4 |
 | `click` | `<selector>` | Click element |
 | `input` | `<selector> <text>` | Type into input |
 | `clear` | `<selector>` | Clear input |

@@ -12,6 +12,9 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
+      - name: Install ffmpeg on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
