@@ -148,6 +148,25 @@ func TestE2E_Key(t *testing.T) {
 	}
 }
 
+// TestE2E_TypeDigits checks that digits reach a text field and a number field.
+func TestE2E_TypeDigits(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/keyboard")
+	for _, tc := range []struct{ field, text string }{
+		{"#edit", "a1b2"},
+		{"#num", "42"},
+		{"#num", "-- -7"},
+	} {
+		mustRodney(t, home, "js", "document.querySelector('"+tc.field+"').value = ''")
+		mustRodney(t, home, "focus", tc.field)
+		mustRodney(t, home, append([]string{"type"}, strings.Fields(tc.text)...)...)
+		want := strings.TrimSpace(strings.TrimPrefix(tc.text, "--"))
+		if got := mustRodney(t, home, "js", "document.querySelector('"+tc.field+"').value"); got != want {
+			t.Fatalf("%s after type %q = %q, want %q", tc.field, tc.text, got, want)
+		}
+	}
+}
+
 // TestE2E_KeyEditing checks that the editing and navigation keys change a
 // field the way a person pressing them would.
 func TestE2E_KeyEditing(t *testing.T) {

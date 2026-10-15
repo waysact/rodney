@@ -173,7 +173,7 @@ func editableFocus(page *rod.Page) error {
 	 if (el.matches('textarea')) return !el.disabled && !el.readOnly;
 	 if (!el.matches('input')) return false;
 	 return !el.disabled && !el.readOnly &&
-	   ['text','search','email','url','tel','password'].includes(el.type);
+	   ['text','search','email','url','tel','password','number'].includes(el.type);
 	}`)
 	if err != nil {
 		return errors.New("cannot inspect focused element")

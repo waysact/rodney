@@ -58,7 +58,7 @@ else setTimeout(() => location.search = 'reloaded', 2500);
 	"record-green": `<!DOCTYPE html><html><body style="margin:0;background:green"></body></html>`,
 	"record-blue":  `<!DOCTYPE html><html><body style="margin:0;background:blue"></body></html>`,
 	"keyboard": `<!DOCTYPE html><html><body>
-<input id="edit" value=""><input id="other" value=""><input id="disabled" disabled>
+<input id="edit" value=""><input id="other" value=""><input id="num" type="number"><input id="disabled" disabled>
 <input id="readonly" readonly><textarea id="area"></textarea><div id="rich" contenteditable="true"></div>
 <div id="plain-focus" tabindex="0"></div><form id="enter-form"><input id="form-input"></form>
 <script>
