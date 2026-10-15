@@ -126,10 +126,18 @@ func TestE2E_Key(t *testing.T) {
 	if err := json.Unmarshal([]byte(mustRodney(t, home, "js", "JSON.stringify(keyEvents)")), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 14 || got[10].Type != "beforeinput" || got[11].Type != "input" {
+	// Whether a chord also inserts text depends on the platform: Meta+K
+	// types "k" on Linux but not on macOS. Compare the key events only.
+	keys := got[:0]
+	for _, e := range got {
+		if e.Type == "keydown" || e.Type == "keyup" {
+			keys = append(keys, e)
+		}
+	}
+	got = keys
+	if len(got) != 12 {
 		t.Fatalf("events = %+v", got)
 	}
-	got = append(got[:10], got[12:]...)
 	for i, want := range []struct {
 		typ, key          string
 		shift, ctrl, meta bool
