@@ -126,7 +126,7 @@ rodney hover ".menu-item"          # Hover over element
 rodney focus "#email"              # Focus element
 ```
 
-`type [--delay ms] <text>` edits the focused, enabled text input, textarea, or contenteditable element at its caret or selection. The delay is between Unicode grapheme clusters. Quote text with spaces. `input <selector> <text>` replaces the field content and emits its immediate input and change events. Entered text is absent from success output and Rodney trace output. `key <key-or-chord>` accepts Enter, Tab, Escape, the four Arrow names, or Control, Meta, Alt, and Shift with one ASCII letter or digit. Modifiers are literal on every host. Browser and OS shortcuts can intercept some chords.
+`type [--delay ms] <text>` edits the focused, enabled text input, textarea, or contenteditable element at its caret or selection. The delay is between Unicode grapheme clusters. Quote text with spaces. `input <selector> <text>` replaces the field content and emits its immediate input and change events. Entered text is absent from success output and Rodney trace output. `key <key-or-chord>` accepts Enter, Tab, Escape, the four Arrow names, Backspace, Delete, Insert, Space, Home, End, PageUp, PageDown, and F1 to F12, each optionally with modifiers, or Control, Meta, Alt, and Shift with one ASCII letter or digit. Modifiers are literal on every host. Browser and OS shortcuts can intercept some chords.
 
 ### Move and click the pointer
 

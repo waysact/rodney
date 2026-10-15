@@ -45,8 +45,9 @@ Interaction:
 
 Typing uses one quoted shell argument for text with spaces. Delay applies
 between Unicode grapheme clusters. Key accepts Enter, Tab, Escape, ArrowUp,
-ArrowDown, ArrowLeft, ArrowRight, or Control/Meta/Alt/Shift plus one ASCII
-letter or digit. Modifiers are literal: Control+K and Meta+K differ. Browser
+ArrowDown, ArrowLeft, ArrowRight, Backspace, Delete, Insert, Space, Home, End,
+PageUp, PageDown and F1 to F12, each optionally with Control/Meta/Alt/Shift, or
+Control/Meta/Alt/Shift plus one ASCII letter or digit. Modifiers are literal: Control+K and Meta+K differ. Browser
 or OS shortcuts can intercept chords. Typed text is absent from command output.
 Mouse move defaults to 500 ms. First set a position with --duration 0. Selector
 and viewport anchors default to 50%,50%; for example --anchor 30%,70%. A move

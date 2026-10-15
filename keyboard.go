@@ -29,6 +29,13 @@ func parseKeyChord(chord string) ([]input.Key, input.Key, error) {
 		"enter": input.Enter, "tab": input.Tab, "escape": input.Escape,
 		"arrowup": input.ArrowUp, "arrowdown": input.ArrowDown,
 		"arrowleft": input.ArrowLeft, "arrowright": input.ArrowRight,
+		"backspace": input.Backspace, "delete": input.Delete,
+		"insert": input.Insert, "space": input.Space,
+		"home": input.Home, "end": input.End,
+		"pageup": input.PageUp, "pagedown": input.PageDown,
+		"f1": input.F1, "f2": input.F2, "f3": input.F3, "f4": input.F4,
+		"f5": input.F5, "f6": input.F6, "f7": input.F7, "f8": input.F8,
+		"f9": input.F9, "f10": input.F10, "f11": input.F11, "f12": input.F12,
 	}
 	var mods []input.Key
 	seen := map[string]bool{}

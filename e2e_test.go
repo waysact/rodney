@@ -148,6 +148,33 @@ func TestE2E_Key(t *testing.T) {
 	}
 }
 
+// TestE2E_KeyEditing checks that the editing and navigation keys change a
+// field the way a person pressing them would.
+func TestE2E_KeyEditing(t *testing.T) {
+	home := startSession(t)
+	mustRodney(t, home, "open", env.server.URL+"/fixture/keyboard")
+	mustRodney(t, home, "focus", "#edit")
+	mustRodney(t, home, "type", "abcd")
+	// JSON keeps the trailing space that the command output would lose.
+	value := func() string {
+		return mustRodney(t, home, "js", "JSON.stringify(document.querySelector('#edit').value)")
+	}
+	for _, step := range []struct{ key, want string }{
+		{"Backspace", `"abc"`},
+		{"Home", `"abc"`},
+		{"Delete", `"bc"`},
+		{"End", `"bc"`},
+		{"Space", `"bc "`},
+		{"ArrowLeft", `"bc "`},
+		{"Backspace", `"b "`},
+	} {
+		mustRodney(t, home, "key", step.key)
+		if got := value(); got != step.want {
+			t.Fatalf("after %s value = %q, want %q", step.key, got, step.want)
+		}
+	}
+}
+
 func TestE2E_Type(t *testing.T) {
 	home := startSession(t)
 	mustRodney(t, home, "open", env.server.URL+"/fixture/keyboard")

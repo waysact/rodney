@@ -29,6 +29,19 @@ func TestParseKeyChord(t *testing.T) {
 		{"ArrowDown", nil, input.ArrowDown},
 		{"ArrowLeft", nil, input.ArrowLeft},
 		{"ArrowRight", nil, input.ArrowRight},
+		{"Backspace", nil, input.Backspace},
+		{"Delete", nil, input.Delete},
+		{"Insert", nil, input.Insert},
+		{"Space", nil, input.Space},
+		{"Home", nil, input.Home},
+		{"End", nil, input.End},
+		{"PageUp", nil, input.PageUp},
+		{"PageDown", nil, input.PageDown},
+		{"F1", nil, input.F1},
+		{"f12", nil, input.F12},
+		{"Control+F1", []input.Key{input.ControlLeft}, input.F1},
+		{"Shift+Delete", []input.Key{input.ShiftLeft}, input.Delete},
+		{"Alt+Backspace", []input.Key{input.AltLeft}, input.Backspace},
 	}
 	for _, tc := range good {
 		t.Run(tc.name, func(t *testing.T) {
@@ -38,7 +51,7 @@ func TestParseKeyChord(t *testing.T) {
 			}
 		})
 	}
-	for _, chord := range []string{"K", "Control", "Control+Control+K", "Primary+K", "Control+F1", "Control++K", "Control+K+L", ""} {
+	for _, chord := range []string{"K", "Control", "Control+Control+K", "Primary+K", "F13", "Control++K", "Control+K+L", ""} {
 		t.Run("bad/"+chord, func(t *testing.T) {
 			if _, _, err := parseKeyChord(chord); err == nil {
 				t.Fatal("accepted invalid chord")
